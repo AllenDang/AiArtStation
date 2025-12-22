@@ -1,0 +1,56 @@
+[package]
+name = "ai-artstation"
+version = "0.1.0"
+description = "AI Art Station - Generate images and videos with AI"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "ai_artstation_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Image processing
+image = { version = "0.25", features = ["jpeg", "png", "webp", "gif"] }
+base64 = "0.22"
+
+# Encryption
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", features = ["simple"] }
+sha2 = "0.10"
+rand = "0.8"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+thiserror = "2"
+anyhow = "1"
+hostname = "0.4"
+opener = "0.7"
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
