@@ -76,7 +76,7 @@ export function ImageBundleCard({ bundle, onView, onDelete }: ImageBundleCardPro
         <div className="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
           <div className="bg-black/60 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
             <GripVertical className="w-3 h-3" />
-            Drag
+            拖动
           </div>
         </div>
 
@@ -90,7 +90,7 @@ export function ImageBundleCard({ bundle, onView, onDelete }: ImageBundleCardPro
 
         {/* Click hint */}
         <div className="absolute bottom-2 left-2 bg-black/60 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-          Click to view
+          点击查看
         </div>
 
         {/* Delete button */}

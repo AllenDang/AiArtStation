@@ -73,6 +73,55 @@ pub async fn open_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Open folder and select/reveal a specific file
+#[tauri::command]
+pub async fn reveal_file(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path))
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Try dbus for Nautilus/GNOME Files, fall back to opening parent folder
+        let result = std::process::Command::new("dbus-send")
+            .args([
+                "--session",
+                "--dest=org.freedesktop.FileManager1",
+                "--type=method_call",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+                &format!("array:string:file://{}", path),
+                "string:",
+            ])
+            .spawn();
+
+        if result.is_err() {
+            // Fall back to opening parent directory
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                std::process::Command::new("xdg-open")
+                    .arg(parent)
+                    .spawn()
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Open a file with the default application
 #[tauri::command]
 pub async fn open_file(path: String) -> Result<(), String> {

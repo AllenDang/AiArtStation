@@ -21,7 +21,6 @@ import { useImageGeneration, useSettings } from "../../hooks";
 import { ASPECT_RATIO_OPTIONS } from "../../types";
 import type { ReferenceImage, GenerateImageRequest } from "../../types";
 import {
-  Loader2,
   ChevronUp,
   ChevronDown,
   Sparkles,
@@ -36,10 +35,9 @@ type GenerationMode = "image" | "video";
 interface OptionsPanelProps {
   projectId: string;
   onStartImageTask: (request: GenerateImageRequest) => Promise<string>;
-  hasRunningTasks?: boolean;
 }
 
-export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = false }: OptionsPanelProps) {
+export function OptionsPanel({ projectId, onStartImageTask }: OptionsPanelProps) {
   const { readImageFile } = useImageGeneration();
   const { config, loadSettings } = useSettings();
 
@@ -50,7 +48,6 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
   const [prompt, setPrompt] = useState("");
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([]);
   const [aspectRatio, setAspectRatio] = useState("1:1");
-  const [watermark, setWatermark] = useState(false);
   const [sequentialGeneration, setSequentialGeneration] = useState(false);
   const [sequentialCount, setSequentialCount] = useState<string>("auto"); // "auto" or "2"-"15"
   const [optimizePrompt, setOptimizePrompt] = useState(false);
@@ -58,7 +55,7 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
 
   // Sequential generation count options
   const sequentialCountOptions = [
-    { value: "auto", label: "Auto" },
+    { value: "auto", label: "自动" },
     ...Array.from({ length: 14 }, (_, i) => ({
       value: String(i + 2),
       label: String(i + 2),
@@ -69,19 +66,18 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
     loadSettings().then((cfg) => {
       if (cfg) {
         setAspectRatio(cfg.default_aspect_ratio);
-        setWatermark(cfg.watermark);
       }
     });
   }, [loadSettings]);
 
   const handleGenerate = async () => {
     if (!prompt.trim()) {
-      toast.error("Please enter a prompt");
+      toast.error("请输入提示词");
       return;
     }
 
     if (!config?.api_token_set || !config?.base_url || !config?.image_model) {
-      toast.error("Please configure API settings first");
+      toast.error("请先配置API设置");
       return;
     }
 
@@ -107,7 +103,7 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
         reference_images: referenceImages.map((img) => img.base64),
         size: pixelSize,
         aspect_ratio: aspectRatio,
-        watermark,
+        watermark: false,
         sequential_generation: sequentialGeneration,
         max_images: sequentialGeneration ? (specificCount || 15) : undefined,
         optimize_prompt: optimizePrompt,
@@ -115,9 +111,9 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
       };
 
       await onStartImageTask(request);
-      toast.info("Generation started");
+      toast.info("开始生成");
     } else {
-      toast.info("Video generation coming soon");
+      toast.info("视频生成即将推出");
     }
   };
 
@@ -143,10 +139,10 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
         <CollapsibleTrigger asChild>
           <button className="w-full flex items-center justify-between px-4 py-2 hover:bg-accent/50 transition-colors">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">Generation Options</span>
+              <span className="text-sm font-medium">生成选项</span>
               {referenceImages.length > 0 && (
                 <span className="text-xs bg-primary/20 text-primary px-2 py-0.5 rounded-full">
-                  {referenceImages.length} reference{referenceImages.length !== 1 ? 's' : ''}
+                  {referenceImages.length} 个参考图
                 </span>
               )}
             </div>
@@ -159,9 +155,9 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
         </CollapsibleTrigger>
 
         <CollapsibleContent>
-          <div className="px-4 pb-4 space-y-4">
+          <div className="px-4 pb-4 flex flex-col gap-4">
             {/* Mode Toggle */}
-            <div className="flex gap-1 bg-muted p-1 rounded-lg w-fit">
+            <div className="flex gap-1 bg-muted p-1 rounded-lg w-fit flex-shrink-0">
               <button
                 onClick={() => setMode("image")}
                 className={cn(
@@ -172,7 +168,7 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
                 )}
               >
                 <ImageIcon className="w-4 h-4" />
-                Image
+                图片
               </button>
               <button
                 onClick={() => setMode("video")}
@@ -184,27 +180,26 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
                 )}
               >
                 <Video className="w-4 h-4" />
-                Video
+                视频
               </button>
             </div>
 
             {/* Main Options Row */}
-            <div className="flex gap-4">
+            <div className="flex gap-4 items-stretch">
               {/* Prompt */}
-              <div className="flex-1 space-y-2">
-                <Label htmlFor="prompt">Prompt</Label>
+              <div className="flex-1 flex flex-col gap-2">
+                <Label htmlFor="prompt" className="flex-shrink-0">提示词</Label>
                 <Textarea
                   id="prompt"
-                  placeholder="Describe the image you want to generate..."
+                  placeholder="描述你想要生成的图片..."
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                  rows={3}
-                  className="resize-none"
+                  className="resize-none flex-1 min-h-[100px]"
                 />
               </div>
 
               {/* Reference Images */}
-              <div className="w-64">
+              <div className="w-64 flex-shrink-0">
                 <ImageDropZone
                   images={referenceImages}
                   onImagesChange={setReferenceImages}
@@ -218,7 +213,7 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
             <div className="flex items-end gap-4 flex-wrap">
               {/* Aspect Ratio */}
               <div className="space-y-1.5">
-                <Label className="text-xs">Aspect Ratio</Label>
+                <Label className="text-xs">宽高比</Label>
                 <Select value={aspectRatio} onValueChange={setAspectRatio}>
                   <SelectTrigger className="w-28 h-8">
                     <SelectValue />
@@ -233,16 +228,6 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
                 </Select>
               </div>
 
-              {/* Watermark */}
-              <div className="flex items-center gap-2 h-8">
-                <Switch
-                  id="watermark"
-                  checked={watermark}
-                  onCheckedChange={setWatermark}
-                />
-                <Label htmlFor="watermark" className="text-xs">Watermark</Label>
-              </div>
-
               {/* Sequential */}
               <div className="flex items-center gap-2 h-8">
                 <Switch
@@ -252,7 +237,7 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
                 />
                 <Label htmlFor="sequential" className="text-xs flex items-center gap-1">
                   <Images className="w-3 h-3" />
-                  Sequential
+                  生成组图
                 </Label>
                 {sequentialGeneration && (
                   <Select value={sequentialCount} onValueChange={setSequentialCount}>
@@ -279,7 +264,7 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
                 />
                 <Label htmlFor="optimize" className="text-xs flex items-center gap-1">
                   <Sparkles className="w-3 h-3" />
-                  Optimize
+                  优化提示词
                 </Label>
                 {optimizePrompt && (
                   <Select
@@ -290,28 +275,22 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="standard">Standard</SelectItem>
-                      <SelectItem value="fast">Fast</SelectItem>
+                      <SelectItem value="standard">标准</SelectItem>
+                      <SelectItem value="fast">快速</SelectItem>
                     </SelectContent>
                   </Select>
                 )}
               </div>
 
               {/* Generate Button */}
-              <div className="ml-auto flex items-center gap-2">
-                {hasRunningTasks && (
-                  <span className="text-xs text-muted-foreground flex items-center gap-1">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    Tasks running
-                  </span>
-                )}
+              <div className="ml-auto">
                 <Button
                   onClick={handleGenerate}
                   disabled={!prompt.trim() || !config?.api_token_set}
                   size="lg"
                   className="px-8"
                 >
-                  Generate
+                  生成
                 </Button>
               </div>
             </div>
@@ -319,13 +298,13 @@ export function OptionsPanel({ projectId, onStartImageTask, hasRunningTasks = fa
             {/* Hints */}
             {sequentialGeneration && sequentialCount === "auto" && (
               <p className="text-xs text-muted-foreground">
-                <span className="font-medium">Tip:</span> In Auto mode, include the desired count in your prompt (e.g., "Generate 3 images of...") for best results.
+                <span className="font-medium">提示：</span>在自动模式下，请在提示词中包含所需数量（例如"生成3张..."）以获得最佳效果。
               </p>
             )}
 
             {!config?.api_token_set && (
               <p className="text-xs text-yellow-500">
-                Please configure API settings first
+                请先配置API设置
               </p>
             )}
           </div>

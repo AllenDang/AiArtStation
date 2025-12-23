@@ -48,11 +48,11 @@ export function TaskCard({ task, onRetry, onDismiss, onViewImages }: TaskCardPro
             <div className="flex flex-col items-center gap-2 text-muted-foreground">
               <Loader2 className="w-8 h-8 animate-spin" />
               <span className="text-xs">
-                {task.status === "starting" ? "Starting..." : "Generating..."}
+                {task.status === "starting" ? "启动中..." : "生成中..."}
               </span>
               {isSequential && (
                 <span className="text-xs text-muted-foreground">
-                  {isAutoMode ? `Up to ${maxImages} images` : `${maxImages} images`}
+                  {isAutoMode ? `最多 ${maxImages} 张图片` : `${maxImages} 张图片`}
                 </span>
               )}
             </div>
@@ -90,7 +90,7 @@ export function TaskCard({ task, onRetry, onDismiss, onViewImages }: TaskCardPro
           {isCompleted && actualCount === 0 && (
             <div className="flex flex-col items-center gap-2 text-muted-foreground">
               <CheckCircle2 className="w-8 h-8 text-green-500" />
-              <span className="text-xs">Completed</span>
+              <span className="text-xs">已完成</span>
             </div>
           )}
 
@@ -98,11 +98,11 @@ export function TaskCard({ task, onRetry, onDismiss, onViewImages }: TaskCardPro
           {isFailed && (
             <div
               className="flex flex-col items-center gap-2 text-destructive p-4 cursor-help"
-              title={task.error || "Generation failed"}
+              title={task.error || "生成失败"}
             >
               <XCircle className="w-8 h-8" />
               <span className="text-xs text-center line-clamp-4 px-2">
-                {task.error || "Generation failed"}
+                {task.error || "生成失败"}
               </span>
             </div>
           )}
@@ -125,16 +125,16 @@ export function TaskCard({ task, onRetry, onDismiss, onViewImages }: TaskCardPro
             {isRunning && <Loader2 className="w-3 h-3 animate-spin" />}
             {isCompleted && <CheckCircle2 className="w-3 h-3" />}
             {isFailed && <XCircle className="w-3 h-3" />}
-            {task.status === "starting" && "Starting"}
-            {task.status === "generating" && "Generating"}
-            {task.status === "completed" && "Done"}
-            {task.status === "failed" && "Failed"}
+            {task.status === "starting" && "启动中"}
+            {task.status === "generating" && "生成中"}
+            {task.status === "completed" && "完成"}
+            {task.status === "failed" && "失败"}
           </div>
 
           {/* Click hint for completed tasks with images */}
           {isCompleted && actualCount > 0 && (
             <div className="absolute bottom-2 left-2 bg-black/60 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-              Click to view
+              点击查看
             </div>
           )}
         </div>
@@ -163,7 +163,7 @@ export function TaskCard({ task, onRetry, onDismiss, onViewImages }: TaskCardPro
                 variant="secondary"
                 className="h-7 w-7"
                 onClick={(e) => { e.stopPropagation(); onRetry(task.id); }}
-                title="Retry"
+                title="重试"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
               </Button>
@@ -173,7 +173,7 @@ export function TaskCard({ task, onRetry, onDismiss, onViewImages }: TaskCardPro
               variant="secondary"
               className="h-7 w-7"
               onClick={(e) => { e.stopPropagation(); onDismiss(task.id); }}
-              title="Dismiss"
+              title="关闭"
             >
               <X className="w-3.5 h-3.5" />
             </Button>

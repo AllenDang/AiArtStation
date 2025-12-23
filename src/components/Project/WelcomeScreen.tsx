@@ -44,9 +44,9 @@ export function WelcomeScreen({ onCreateProject, onSelectProject }: WelcomeScree
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-primary/10 mb-4">
             <Sparkles className="w-8 h-8 text-primary" />
           </div>
-          <h1 className="text-3xl font-bold mb-2">Welcome to AI Art Station</h1>
+          <h1 className="text-3xl font-bold mb-2">欢迎使用 AI 艺术工作站</h1>
           <p className="text-muted-foreground">
-            Create a project to start generating images & videos
+            创建一个项目开始生成图片和视频
           </p>
         </div>
 
@@ -55,7 +55,7 @@ export function WelcomeScreen({ onCreateProject, onSelectProject }: WelcomeScree
             value={projectName}
             onChange={(e) => setProjectName(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="My First Comic"
+            placeholder="我的第一个项目"
             className="text-center text-lg h-12"
             autoFocus
           />
@@ -67,7 +67,7 @@ export function WelcomeScreen({ onCreateProject, onSelectProject }: WelcomeScree
             disabled={!projectName.trim() || creating}
             className="w-full h-12 text-lg"
           >
-            {creating ? "Creating..." : "Create Project"}
+            {creating ? "创建中..." : "创建项目"}
           </Button>
         </div>
       </div>

@@ -215,10 +215,10 @@ export function ImageDropZone({
   };
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <Label>
-          Reference Images ({images.length}/{maxImages})
+          参考图片 ({images.length}/{maxImages})
         </Label>
         {images.length > 0 && (
           <Button
@@ -227,7 +227,7 @@ export function ImageDropZone({
             className="h-auto p-0 text-xs text-muted-foreground hover:text-destructive"
             onClick={handleClearAll}
           >
-            Clear all
+            清除全部
           </Button>
         )}
       </div>
@@ -240,7 +240,7 @@ export function ImageDropZone({
           e.preventDefault();
         }}
         className={cn(
-          "border-2 border-dashed rounded-lg p-4 transition-colors",
+          "border-2 border-dashed rounded-lg p-3 transition-colors min-h-[140px]",
           isDragging
             ? "border-primary bg-primary/10"
             : "border-border hover:border-muted-foreground/50",
@@ -255,18 +255,18 @@ export function ImageDropZone({
 
         {images.length === 0 ? (
           <div className="text-center py-4">
-            <ImagePlus className="mx-auto h-10 w-10 text-muted-foreground stroke-1" />
+            <ImagePlus className="mx-auto h-8 w-8 text-muted-foreground stroke-1" />
             <p className="mt-2 text-sm text-muted-foreground">
-              Drop images here or{" "}
+              拖放图片到这里或{" "}
               <button
                 onClick={handleSelectFiles}
                 className="text-primary hover:underline"
               >
-                browse
+                浏览
               </button>
             </p>
             <p className="mt-1 text-xs text-muted-foreground/70">
-              Drag generated results here to use as reference
+              拖放生成的图片作为参考
             </p>
           </div>
         ) : (
@@ -280,7 +280,7 @@ export function ImageDropZone({
                 />
                 {img.was_resized && (
                   <div className="absolute bottom-1 left-1 bg-yellow-500/90 text-black text-[10px] px-1 rounded font-medium">
-                    Resized
+                    已缩放
                   </div>
                 )}
                 <button

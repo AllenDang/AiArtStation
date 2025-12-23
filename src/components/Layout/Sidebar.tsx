@@ -1,206 +1,203 @@
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
+import { useState, useCallback } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import {
-  ChevronDown,
-  ChevronRight,
   User,
   Mountain,
   Palette,
   Package,
   Image,
   Video,
-  Plus,
-  GripVertical,
   History,
+  Tag,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { Asset, AssetType } from "@/types";
+import type { AssetType, AssetTypeCounts } from "@/types";
 
 type ViewMode = "history-images" | "history-videos" | "history-all";
 
+// Data structure for dropped images
+export interface DroppedImageData {
+  file_path: string;
+  image_id: string; // ID of the image being dropped
+  thumbnail?: string;
+}
+
 interface SidebarProps {
-  assetsByType: Record<AssetType, Asset[]>;
+  assetTypeCounts: AssetTypeCounts;
   viewMode: ViewMode;
+  selectedAssetType: AssetType | null;
   onViewModeChange: (mode: ViewMode) => void;
-  onAssetClick: (asset: Asset) => void;
-  onAssetDragStart: (asset: Asset, e: React.DragEvent) => void;
-  onImportAsset: () => void;
+  onAssetTypeSelect: (type: AssetType | null) => void;
+  onDropImageToCategory?: (imageId: string, assetType: AssetType) => void;
 }
 
 const assetTypeConfig: Record<AssetType, { label: string; icon: React.ElementType }> = {
-  character: { label: "Characters", icon: User },
-  background: { label: "Backgrounds", icon: Mountain },
-  style: { label: "Styles", icon: Palette },
-  prop: { label: "Props", icon: Package },
+  character: { label: "角色", icon: User },
+  background: { label: "背景", icon: Mountain },
+  style: { label: "风格", icon: Palette },
+  prop: { label: "道具", icon: Package },
 };
 
 export function Sidebar({
-  assetsByType,
+  assetTypeCounts,
   viewMode,
+  selectedAssetType,
   onViewModeChange,
-  onAssetClick,
-  onAssetDragStart,
-  onImportAsset,
+  onAssetTypeSelect,
+  onDropImageToCategory,
 }: SidebarProps) {
-  const [expandedTypes, setExpandedTypes] = useState<Record<AssetType, boolean>>({
-    character: true,
-    background: true,
-    style: true,
-    prop: true,
-  });
+  const [dragOverType, setDragOverType] = useState<AssetType | null>(null);
 
-  const toggleType = (type: AssetType) => {
-    setExpandedTypes((prev) => ({
-      ...prev,
-      [type]: !prev[type],
-    }));
+  const handleDragOver = useCallback((e: React.DragEvent, type: AssetType) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverType(type);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverType(null);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent, assetType: AssetType) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverType(null);
+
+    if (!onDropImageToCategory) return;
+
+    // Try to parse the dropped data
+    const textData = e.dataTransfer.getData("text/plain");
+    if (textData) {
+      try {
+        const parsed = JSON.parse(textData);
+        // Check if it's our image format
+        if (parsed.type === "ai-artstation-image" && parsed.id) {
+          onDropImageToCategory(parsed.id, assetType);
+        }
+      } catch {
+        // Not JSON, ignore
+      }
+    }
+  }, [onDropImageToCategory]);
+
+  const getCategoryCount = (type: AssetType): number => {
+    return assetTypeCounts[type] || 0;
   };
 
   return (
     <div className="w-56 border-r flex flex-col bg-muted/30">
       <ScrollArea className="flex-1">
         <div className="p-3">
-          {/* Assets Section */}
+          {/* Categories Section - for filtering and tagging */}
           <div className="mb-4">
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2 mb-2">
+              <Tag className="h-3.5 w-3.5 text-muted-foreground" />
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                Assets
+                分类
               </h3>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6"
-                onClick={onImportAsset}
-                title="Import asset"
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
             </div>
-
             <p className="text-xs text-muted-foreground mb-2 px-1">
-              Drag images here to save as reusable references
+              拖放图片到这里进行标记
             </p>
 
-            {(Object.keys(assetTypeConfig) as AssetType[]).map((type) => {
-              const config = assetTypeConfig[type];
-              const typeAssets = assetsByType[type] || [];
-              const Icon = config.icon;
+            <div className="space-y-1">
+              {(Object.keys(assetTypeConfig) as AssetType[]).map((type) => {
+                const config = assetTypeConfig[type];
+                const count = getCategoryCount(type);
+                const Icon = config.icon;
+                const isSelected = selectedAssetType === type;
+                const isDragOver = dragOverType === type;
 
-              return (
-                <Collapsible
-                  key={type}
-                  open={expandedTypes[type]}
-                  onOpenChange={() => toggleType(type)}
-                >
-                  <CollapsibleTrigger className="flex items-center w-full py-1 px-2 rounded hover:bg-accent text-sm">
-                    {expandedTypes[type] ? (
-                      <ChevronDown className="h-3 w-3 mr-1" />
-                    ) : (
-                      <ChevronRight className="h-3 w-3 mr-1" />
+                return (
+                  <button
+                    key={type}
+                    className={cn(
+                      "flex items-center w-full py-1.5 px-2 rounded text-sm transition-colors",
+                      isSelected
+                        ? "bg-accent text-accent-foreground"
+                        : "hover:bg-accent",
+                      isDragOver && "bg-primary/20 ring-2 ring-primary ring-dashed"
                     )}
+                    onClick={() => onAssetTypeSelect(isSelected ? null : type)}
+                    onDragOver={(e) => handleDragOver(e, type)}
+                    onDragLeave={handleDragLeave}
+                    onDrop={(e) => handleDrop(e, type)}
+                  >
                     <Icon className="h-3.5 w-3.5 mr-2 text-muted-foreground" />
                     <span>{config.label}</span>
                     <span className="ml-auto text-xs text-muted-foreground">
-                      {typeAssets.length}
+                      {count}
                     </span>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <div className="ml-4 pl-2 border-l border-border">
-                      {typeAssets.length === 0 ? (
-                        <p className="text-xs text-muted-foreground py-1 px-2">
-                          No assets
-                        </p>
-                      ) : (
-                        typeAssets.map((asset) => (
-                          <div
-                            key={asset.id}
-                            className="group flex items-center gap-2 py-1 px-2 rounded hover:bg-accent cursor-pointer text-sm"
-                            onClick={() => onAssetClick(asset)}
-                            draggable
-                            onDragStart={(e) => onAssetDragStart(asset, e)}
-                          >
-                            <GripVertical className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
-                            {asset.thumbnail ? (
-                              <img
-                                src={asset.thumbnail}
-                                alt={asset.name}
-                                className="w-6 h-6 rounded object-cover"
-                              />
-                            ) : (
-                              <div className="w-6 h-6 rounded bg-muted flex items-center justify-center">
-                                <Icon className="h-3 w-3" />
-                              </div>
-                            )}
-                            <span className="truncate">{asset.name}</span>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </CollapsibleContent>
-                </Collapsible>
-              );
-            })}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <Separator className="my-3" />
 
-          {/* History Section (formerly Gallery) */}
+          {/* History Section */}
           <div>
             <div className="flex items-center gap-2 mb-2">
               <History className="h-3.5 w-3.5 text-muted-foreground" />
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                History
+                历史
               </h3>
             </div>
             <p className="text-xs text-muted-foreground mb-2 px-1">
-              All generated images and videos
+              所有生成的图片和视频
             </p>
             <div className="space-y-1">
               <button
                 className={cn(
                   "flex items-center w-full py-1.5 px-2 rounded text-sm",
-                  viewMode === "history-all"
+                  viewMode === "history-all" && !selectedAssetType
                     ? "bg-accent text-accent-foreground"
                     : "hover:bg-accent"
                 )}
-                onClick={() => onViewModeChange("history-all")}
+                onClick={() => {
+                  onViewModeChange("history-all");
+                  onAssetTypeSelect(null);
+                }}
               >
                 <div className="flex items-center gap-2">
                   <Image className="h-3.5 w-3.5" />
                   <Video className="h-3.5 w-3.5 -ml-1" />
                 </div>
-                <span className="ml-2">All</span>
+                <span className="ml-2">全部</span>
               </button>
               <button
                 className={cn(
                   "flex items-center w-full py-1.5 px-2 rounded text-sm",
-                  viewMode === "history-images"
+                  viewMode === "history-images" && !selectedAssetType
                     ? "bg-accent text-accent-foreground"
                     : "hover:bg-accent"
                 )}
-                onClick={() => onViewModeChange("history-images")}
+                onClick={() => {
+                  onViewModeChange("history-images");
+                  onAssetTypeSelect(null);
+                }}
               >
                 <Image className="h-3.5 w-3.5 mr-2" />
-                <span>Images</span>
+                <span>图片</span>
               </button>
               <button
                 className={cn(
                   "flex items-center w-full py-1.5 px-2 rounded text-sm",
-                  viewMode === "history-videos"
+                  viewMode === "history-videos" && !selectedAssetType
                     ? "bg-accent text-accent-foreground"
                     : "hover:bg-accent"
                 )}
-                onClick={() => onViewModeChange("history-videos")}
+                onClick={() => {
+                  onViewModeChange("history-videos");
+                  onAssetTypeSelect(null);
+                }}
               >
                 <Video className="h-3.5 w-3.5 mr-2" />
-                <span>Videos</span>
+                <span>视频</span>
               </button>
             </div>
           </div>

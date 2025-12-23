@@ -11,9 +11,10 @@ use commands::{
     // Generation
     generate_image, prepare_reference_image,
     // Gallery
-    get_gallery, search_gallery, get_image_detail, delete_gallery_image,
+    get_gallery, search_gallery, get_image_detail, delete_gallery_image, regenerate_thumbnails,
+    add_image_tag, remove_image_tag, get_asset_type_counts, get_gallery_by_asset_type,
     // Files
-    read_image_file, read_image_raw, open_folder, open_file, path_exists, ensure_directory, get_file_info,
+    read_image_file, read_image_raw, open_folder, open_file, reveal_file, path_exists, ensure_directory, get_file_info,
     // Projects
     create_project, get_projects, get_project, update_project, delete_project,
     // Assets
@@ -24,6 +25,7 @@ use commands::{
     AppState, DbState,
 };
 use storage::{ConfigStore, Database};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -33,7 +35,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
-            // Get app data directory
+            // Get app data directory for config storage
             let app_data_dir = app.path().app_data_dir()
                 .expect("Failed to get app data directory");
 
@@ -41,9 +43,27 @@ pub fn run() {
             let config_store = ConfigStore::new(app_data_dir.clone())
                 .expect("Failed to initialize config store");
 
-            // Initialize database
-            let database = Database::new(app_data_dir)
+            // Load config to get output directory for database
+            let config = config_store.load().unwrap_or_default();
+            let output_dir = if config.output_directory.is_empty() {
+                // Use default if not configured
+                dirs::picture_dir()
+                    .map(|p| p.join("AI-ArtStation"))
+                    .unwrap_or_else(|| PathBuf::from("./AI-ArtStation"))
+            } else {
+                PathBuf::from(&config.output_directory)
+            };
+
+            // Initialize database in output directory
+            let database = Database::new(output_dir)
                 .expect("Failed to initialize database");
+
+            // Cleanup missing files on startup
+            if let Ok((images, videos)) = database.cleanup_missing_files() {
+                if images > 0 || videos > 0 {
+                    println!("Cleanup: removed {} images and {} videos with missing files", images, videos);
+                }
+            }
 
             // Manage state
             app.manage(AppState {
@@ -70,11 +90,17 @@ pub fn run() {
             search_gallery,
             get_image_detail,
             delete_gallery_image,
+            regenerate_thumbnails,
+            add_image_tag,
+            remove_image_tag,
+            get_asset_type_counts,
+            get_gallery_by_asset_type,
             // Files
             read_image_file,
             read_image_raw,
             open_folder,
             open_file,
+            reveal_file,
             path_exists,
             ensure_directory,
             get_file_info,

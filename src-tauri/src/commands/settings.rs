@@ -16,8 +16,6 @@ pub struct ConfigResponse {
     pub video_model: String,
     pub output_directory: String,
     pub output_format: String,
-    pub organize_by_date: bool,
-    pub save_metadata: bool,
     pub default_size: String,
     pub default_aspect_ratio: String,
     pub watermark: bool,
@@ -31,11 +29,6 @@ pub struct SaveConfigRequest {
     pub video_model: String,
     pub output_directory: String,
     pub output_format: String,
-    pub organize_by_date: bool,
-    pub save_metadata: bool,
-    pub default_size: String,
-    pub default_aspect_ratio: String,
-    pub watermark: bool,
 }
 
 #[tauri::command]
@@ -50,8 +43,6 @@ pub async fn load_settings(state: State<'_, AppState>) -> Result<ConfigResponse,
         video_model: config.video_model,
         output_directory: config.output_directory,
         output_format: config.output_format,
-        organize_by_date: config.organize_by_date,
-        save_metadata: config.save_metadata,
         default_size: config.default_size,
         default_aspect_ratio: config.default_aspect_ratio,
         watermark: config.watermark,
@@ -77,11 +68,6 @@ pub async fn save_settings(
     config.video_model = request.video_model;
     config.output_directory = request.output_directory;
     config.output_format = request.output_format;
-    config.organize_by_date = request.organize_by_date;
-    config.save_metadata = request.save_metadata;
-    config.default_size = request.default_size;
-    config.default_aspect_ratio = request.default_aspect_ratio;
-    config.watermark = request.watermark;
 
     store.save(&config).map_err(|e| e.to_string())?;
 

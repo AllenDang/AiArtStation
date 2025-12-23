@@ -97,7 +97,7 @@ export function ProjectSelector({
     setIsDeleting(true);
     try {
       await onDeleteProject(projectToDelete.id);
-      toast.success(`Project "${projectToDelete.name}" deleted`);
+      toast.success(`项目 "${projectToDelete.name}" 已删除`);
 
       // If we deleted the current project, select another one
       if (currentProject?.id === projectToDelete.id) {
@@ -105,7 +105,7 @@ export function ProjectSelector({
         onSelectProject(remaining.length > 0 ? remaining[0] : null);
       }
     } catch (e) {
-      toast.error(`Failed to delete project: ${e}`);
+      toast.error(`删除项目失败: ${e}`);
     } finally {
       setIsDeleting(false);
       setProjectToDelete(null);
@@ -121,7 +121,7 @@ export function ProjectSelector({
           onValueChange={handleSelectChange}
         >
           <SelectTrigger className="w-[200px]">
-            <SelectValue placeholder="Select project..." />
+            <SelectValue placeholder="选择项目..." />
           </SelectTrigger>
           <SelectContent>
             {projects.map((project) => (
@@ -132,7 +132,7 @@ export function ProjectSelector({
             <SelectItem value="new" className="text-primary">
               <div className="flex items-center gap-2">
                 <Plus className="w-4 h-4" />
-                New Project
+                新建项目
               </div>
             </SelectItem>
           </SelectContent>
@@ -152,7 +152,7 @@ export function ProjectSelector({
                 onClick={() => setProjectToDelete(currentProject)}
               >
                 <Trash2 className="w-4 h-4 mr-2" />
-                Delete Project
+                删除项目
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -163,29 +163,29 @@ export function ProjectSelector({
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create New Project</DialogTitle>
+            <DialogTitle>创建新项目</DialogTitle>
             <DialogDescription>
-              Create a project to organize your generated images and videos.
+              创建项目来整理您生成的图片和视频。
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label htmlFor="name">Project Name</Label>
+              <Label htmlFor="name">项目名称</Label>
               <Input
                 id="name"
                 value={newProjectName}
                 onChange={(e) => setNewProjectName(e.target.value)}
-                placeholder="My Comic Episode 1"
+                placeholder="我的漫画第一集"
                 autoFocus
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="description">Description (optional)</Label>
+              <Label htmlFor="description">描述（可选）</Label>
               <Textarea
                 id="description"
                 value={newProjectDescription}
                 onChange={(e) => setNewProjectDescription(e.target.value)}
-                placeholder="A brief description of this project..."
+                placeholder="项目的简要描述..."
                 rows={3}
               />
             </div>
@@ -196,13 +196,13 @@ export function ProjectSelector({
               onClick={() => setDialogOpen(false)}
               disabled={creating}
             >
-              Cancel
+              取消
             </Button>
             <Button
               onClick={handleCreateProject}
               disabled={!newProjectName.trim() || creating}
             >
-              {creating ? "Creating..." : "Create Project"}
+              {creating ? "创建中..." : "创建项目"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -212,15 +212,15 @@ export function ProjectSelector({
       <AlertDialog open={!!projectToDelete} onOpenChange={(open: boolean) => !open && setProjectToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Project</AlertDialogTitle>
+            <AlertDialogTitle>删除项目</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{projectToDelete?.name}"?
-              This will remove the project and all its history from the database.
-              Generated files on disk will not be deleted.
+              确定要删除 "{projectToDelete?.name}" 吗？
+              这将从数据库中移除该项目及其所有历史记录。
+              磁盘上生成的文件不会被删除。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>取消</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDelete}
               disabled={isDeleting}
@@ -229,10 +229,10 @@ export function ProjectSelector({
               {isDeleting ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Deleting...
+                  删除中...
                 </>
               ) : (
-                "Delete"
+                "删除"
               )}
             </AlertDialogAction>
           </AlertDialogFooter>

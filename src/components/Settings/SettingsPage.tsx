@@ -4,7 +4,6 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -19,7 +18,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import { useSettings, useFiles } from "../../hooks";
 import type { SaveConfigRequest } from "../../types";
 import {
@@ -56,8 +54,6 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
     video_model: "",
     output_directory: "",
     output_format: "jpeg",
-    organize_by_date: true,
-    save_metadata: true,
   });
 
   const [showToken, setShowToken] = useState(false);
@@ -73,8 +69,6 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           video_model: cfg.video_model,
           output_directory: cfg.output_directory,
           output_format: cfg.output_format,
-          organize_by_date: cfg.organize_by_date,
-          save_metadata: cfg.save_metadata,
         });
       }
     });
@@ -91,9 +85,9 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
   const handleSave = async () => {
     try {
       await saveSettings(formData);
-      toast.success("Settings saved successfully");
+      toast.success("设置已保存");
     } catch (e) {
-      toast.error(`Failed to save: ${e}`);
+      toast.error(`保存失败: ${e}`);
     }
   };
 
@@ -102,16 +96,16 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
     try {
       await saveSettings(formData);
       await testConnection();
-      toast.success("Connection successful!");
+      toast.success("连接成功！");
     } catch (e) {
-      toast.error(`Connection failed: ${e}`);
+      toast.error(`连接失败: ${e}`);
     } finally {
       setTesting(false);
     }
   };
 
   const handleClearSettings = async () => {
-    if (confirm("Are you sure you want to clear all settings?")) {
+    if (confirm("确定要清除所有设置吗？")) {
       try {
         await clearSettings();
         const defaultDir = await getDefaultOutputDir();
@@ -122,12 +116,10 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           video_model: "",
           output_directory: defaultDir,
           output_format: "jpeg",
-          organize_by_date: true,
-          save_metadata: true,
         });
-        toast.info("Settings cleared");
+        toast.info("设置已清除");
       } catch (e) {
-        toast.error(`Failed to clear: ${e}`);
+        toast.error(`清除失败: ${e}`);
       }
     }
   };
@@ -137,7 +129,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
       const selected = await open({
         directory: true,
         multiple: false,
-        title: "Select Output Directory",
+        title: "选择输出目录",
       });
       if (selected) {
         setFormData((prev) => ({
@@ -159,9 +151,9 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           </Button>
         )}
         <div>
-          <h1 className="text-2xl font-bold">Settings</h1>
+          <h1 className="text-2xl font-bold">设置</h1>
           <p className="text-muted-foreground">
-            Configure your API credentials and output preferences
+            配置API凭据和输出偏好设置
           </p>
         </div>
       </div>
@@ -171,15 +163,15 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Key className="w-5 h-5" />
-            API Configuration
+            API 配置
           </CardTitle>
           <CardDescription>
-            Configure your AI API credentials and model settings
+            配置AI API凭据和模型设置
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="base_url">Base URL</Label>
+            <Label htmlFor="base_url">基础URL</Label>
             <Input
               id="base_url"
               placeholder="https://ark.cn-beijing.volces.com/api/v3"
@@ -188,11 +180,11 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                 setFormData({ ...formData, base_url: e.target.value })
               }
             />
-            <p className="text-xs text-muted-foreground">API endpoint URL</p>
+            <p className="text-xs text-muted-foreground">API端点URL</p>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="api_token">API Token</Label>
+            <Label htmlFor="api_token">API令牌</Label>
             <div className="relative">
               <Input
                 id="api_token"
@@ -200,7 +192,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                 placeholder={
                   config?.api_token_set
                     ? "••••••••••••••••"
-                    : "Enter your API token"
+                    : "输入您的API令牌"
                 }
                 value={formData.api_token}
                 onChange={(e) =>
@@ -224,13 +216,13 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             </div>
             <p className="text-xs text-muted-foreground">
               {config?.api_token_set
-                ? "Token is set. Enter new value to update."
-                : "Bearer token for authentication"}
+                ? "令牌已设置。输入新值以更新。"
+                : "用于身份验证的Bearer令牌"}
             </p>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="image_model">Image Model</Label>
+            <Label htmlFor="image_model">图片模型</Label>
             <Input
               id="image_model"
               placeholder="doubao-seedream-4-5-251128"
@@ -240,12 +232,12 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
               }
             />
             <p className="text-xs text-muted-foreground">
-              Model ID for image generation
+              用于图片生成的模型ID
             </p>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="video_model">Video Model (optional)</Label>
+            <Label htmlFor="video_model">视频模型（可选）</Label>
             <Input
               id="video_model"
               placeholder="doubao-seedance-1-0-pro-250528"
@@ -255,7 +247,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
               }
             />
             <p className="text-xs text-muted-foreground">
-              Model ID for video generation
+              用于视频生成的模型ID
             </p>
           </div>
 
@@ -267,10 +259,10 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             {testing ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Testing...
+                测试中...
               </>
             ) : (
-              "Test Connection"
+              "测试连接"
             )}
           </Button>
         </CardContent>
@@ -281,15 +273,15 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Folder className="w-5 h-5" />
-            Output Settings
+            输出设置
           </CardTitle>
           <CardDescription>
-            Configure where and how generated images are saved
+            配置生成图片的保存位置和方式
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label>Output Directory</Label>
+            <Label>输出目录</Label>
             <div className="flex gap-2">
               <Input
                 value={formData.output_directory}
@@ -299,7 +291,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                 className="flex-1"
               />
               <Button variant="outline" onClick={handleSelectDirectory}>
-                Browse
+                浏览
               </Button>
               <Button
                 variant="outline"
@@ -312,7 +304,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           </div>
 
           <div className="space-y-2">
-            <Label>Output Format</Label>
+            <Label>输出格式</Label>
             <Select
               value={formData.output_format}
               onValueChange={(value) =>
@@ -328,40 +320,6 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
               </SelectContent>
             </Select>
           </div>
-
-          <Separator />
-
-          <div className="flex items-center justify-between">
-            <div>
-              <Label htmlFor="organize_by_date">Organize by Date</Label>
-              <p className="text-xs text-muted-foreground">
-                Create subfolders by year-month
-              </p>
-            </div>
-            <Switch
-              id="organize_by_date"
-              checked={formData.organize_by_date}
-              onCheckedChange={(checked) =>
-                setFormData({ ...formData, organize_by_date: checked })
-              }
-            />
-          </div>
-
-          <div className="flex items-center justify-between">
-            <div>
-              <Label htmlFor="save_metadata">Save Metadata</Label>
-              <p className="text-xs text-muted-foreground">
-                Save prompt and settings as JSON alongside images
-              </p>
-            </div>
-            <Switch
-              id="save_metadata"
-              checked={formData.save_metadata}
-              onCheckedChange={(checked) =>
-                setFormData({ ...formData, save_metadata: checked })
-              }
-            />
-          </div>
         </CardContent>
       </Card>
 
@@ -371,15 +329,15 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           {loading ? (
             <>
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              Saving...
+              保存中...
             </>
           ) : (
-            "Save Settings"
+            "保存设置"
           )}
         </Button>
         <Button variant="destructive" onClick={handleClearSettings}>
           <Trash2 className="w-4 h-4 mr-2" />
-          Clear All
+          清除全部
         </Button>
       </div>
     </div>

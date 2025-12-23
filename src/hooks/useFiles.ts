@@ -18,6 +18,14 @@ export function useFiles() {
     }
   }, []);
 
+  const revealFile = useCallback(async (path: string) => {
+    try {
+      await invoke("reveal_file", { path });
+    } catch (e) {
+      throw new Error(`Failed to reveal file: ${e}`);
+    }
+  }, []);
+
   const pathExists = useCallback(async (path: string) => {
     try {
       const result = await invoke<boolean>("path_exists", { path });
@@ -38,6 +46,7 @@ export function useFiles() {
   return {
     openFolder,
     openFile,
+    revealFile,
     pathExists,
     ensureDirectory,
   };

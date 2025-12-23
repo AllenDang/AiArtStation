@@ -20,7 +20,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useGallery, useFiles } from "../../hooks";
-import type { GalleryImage, GenerationTask, ImageBundle } from "../../types";
+import type { GalleryImage, GenerationTask, ImageBundle, AssetType } from "../../types";
 import { TaskCard, TaskImagePreview } from "../Generation";
 import { ImageBundleCard } from "./ImageBundleCard";
 import { BundleImagePreview } from "./BundleImagePreview";
@@ -32,13 +32,26 @@ import {
   Loader2,
   ExternalLink,
   FolderOpen,
-  GripVertical,
+  User,
+  Mountain,
+  Palette,
+  Package,
+  Video,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 // Helper type for gallery items (either single image or bundle)
 type GalleryItem =
   | { type: "single"; image: GalleryImage }
   | { type: "bundle"; bundle: ImageBundle };
+
+// Asset type icons
+const assetTypeIcons: Record<AssetType, React.ElementType> = {
+  character: User,
+  background: Mountain,
+  style: Palette,
+  prop: Package,
+};
 
 interface GalleryPageProps {
   projectId: string;
@@ -48,16 +61,20 @@ interface GalleryPageProps {
   onDismissTask?: (taskId: string) => void;
   refreshTrigger?: number;
   onRefreshComplete?: () => void;
+  selectedAssetType?: AssetType | null;
+  onRemoveTag?: (imageId: string, assetType: AssetType) => void;
 }
 
 export function GalleryPage({
   projectId,
-  filter: _filter = "all",
+  filter = "all",
   tasks = [],
   onRetryTask,
   onDismissTask,
   refreshTrigger = 0,
   onRefreshComplete,
+  selectedAssetType = null,
+  onRemoveTag,
 }: GalleryPageProps) {
   const {
     images,
@@ -65,11 +82,12 @@ export function GalleryPage({
     hasMore,
     loading,
     loadGallery,
+    loadGalleryByAssetType,
     searchGallery,
     deleteImage,
     readImageRaw,
   } = useGallery();
-  const { openFile, openFolder } = useFiles();
+  const { openFile, revealFile } = useFiles();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedImage, setSelectedImage] = useState<GalleryImage | null>(null);
@@ -77,7 +95,8 @@ export function GalleryPage({
   const [page, setPage] = useState(0);
 
   // Delete confirmation state
-  const [imageToDelete, setImageToDelete] = useState<GalleryImage | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [modalConfirmDelete, setModalConfirmDelete] = useState(false);
   const [bundleToDelete, setBundleToDelete] = useState<ImageBundle | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -140,11 +159,17 @@ export function GalleryPage({
   }, [images]);
 
   useEffect(() => {
-    loadGallery(projectId, 0, 20, true).then(() => {
+    const load = async () => {
+      if (selectedAssetType) {
+        await loadGalleryByAssetType(projectId, selectedAssetType, 0, 20, true);
+      } else {
+        await loadGallery(projectId, 0, 20, true);
+      }
       onRefreshComplete?.();
-    });
+    };
+    load();
     setPage(0);
-  }, [loadGallery, projectId, refreshTrigger, onRefreshComplete]);
+  }, [loadGallery, loadGalleryByAssetType, projectId, refreshTrigger, onRefreshComplete, selectedAssetType]);
 
   const handleSearch = useCallback(
     async (e: React.FormEvent) => {
@@ -161,9 +186,13 @@ export function GalleryPage({
 
   const handleLoadMore = useCallback(async () => {
     const nextPage = page + 1;
-    await loadGallery(projectId, nextPage, 20, true);
+    if (selectedAssetType) {
+      await loadGalleryByAssetType(projectId, selectedAssetType, nextPage, 20, true);
+    } else {
+      await loadGallery(projectId, nextPage, 20, true);
+    }
     setPage(nextPage);
-  }, [page, loadGallery, projectId]);
+  }, [page, loadGallery, loadGalleryByAssetType, projectId, selectedAssetType]);
 
   const handleImageClick = useCallback(
     async (image: GalleryImage) => {
@@ -172,36 +201,64 @@ export function GalleryPage({
         const base64 = await readImageRaw(image.file_path);
         setFullImage(base64);
       } catch (e) {
-        toast.error(`Failed to load image: ${e}`);
+        toast.error(`加载图片失败: ${e}`);
       }
     },
     [readImageRaw]
   );
 
-  // Show delete confirmation dialog
-  const handleDeleteClick = useCallback((image: GalleryImage) => {
-    setImageToDelete(image);
+  // Handle delete button click - toggle confirm state or delete
+  const handleDeleteClick = useCallback(async (image: GalleryImage) => {
+    if (confirmDeleteId === image.id) {
+      // Second click - actually delete
+      setIsDeleting(true);
+      try {
+        await deleteImage(image.id, true);
+        toast.success("图片已删除");
+        if (selectedImage?.id === image.id) {
+          setSelectedImage(null);
+          setFullImage(null);
+        }
+      } catch (e) {
+        toast.error(`删除失败: ${e}`);
+      } finally {
+        setIsDeleting(false);
+        setConfirmDeleteId(null);
+      }
+    } else {
+      // First click - enter confirm state
+      setConfirmDeleteId(image.id);
+    }
+  }, [confirmDeleteId, deleteImage, selectedImage]);
+
+  // Reset confirm state when mouse leaves the card
+  const handleMouseLeave = useCallback(() => {
+    setConfirmDeleteId(null);
   }, []);
 
-  // Actually perform the delete (single image)
-  const handleConfirmDelete = useCallback(async () => {
-    if (!imageToDelete) return;
+  // Handle modal delete - same pattern
+  const handleModalDelete = useCallback(async () => {
+    if (!selectedImage) return;
 
-    setIsDeleting(true);
-    try {
-      await deleteImage(imageToDelete.id, true);
-      toast.success("Image deleted");
-      if (selectedImage?.id === imageToDelete.id) {
+    if (modalConfirmDelete) {
+      // Second click - actually delete
+      setIsDeleting(true);
+      try {
+        await deleteImage(selectedImage.id, true);
+        toast.success("图片已删除");
         setSelectedImage(null);
         setFullImage(null);
+        setModalConfirmDelete(false);
+      } catch (e) {
+        toast.error(`删除失败: ${e}`);
+      } finally {
+        setIsDeleting(false);
       }
-    } catch (e) {
-      toast.error(`Failed to delete: ${e}`);
-    } finally {
-      setIsDeleting(false);
-      setImageToDelete(null);
+    } else {
+      // First click - enter confirm state
+      setModalConfirmDelete(true);
     }
-  }, [imageToDelete, deleteImage, selectedImage]);
+  }, [selectedImage, modalConfirmDelete, deleteImage]);
 
   // Delete all images in a bundle
   const handleConfirmBundleDelete = useCallback(async () => {
@@ -213,13 +270,13 @@ export function GalleryPage({
       for (const image of bundleToDelete.images) {
         await deleteImage(image.id, true);
       }
-      toast.success(`Deleted ${bundleToDelete.images.length} images`);
+      toast.success(`已删除 ${bundleToDelete.images.length} 张图片`);
       // Close preview if viewing this bundle
       if (previewBundle?.batch_id === bundleToDelete.batch_id) {
         setPreviewBundle(null);
       }
     } catch (e) {
-      toast.error(`Failed to delete bundle: ${e}`);
+      toast.error(`删除图片组失败: ${e}`);
     } finally {
       setIsDeleting(false);
       setBundleToDelete(null);
@@ -229,12 +286,14 @@ export function GalleryPage({
   const closeModal = useCallback(() => {
     setSelectedImage(null);
     setFullImage(null);
+    setModalConfirmDelete(false);
   }, []);
 
   const handleDragStart = useCallback(
     (e: React.DragEvent, image: GalleryImage) => {
       const data = JSON.stringify({
         type: "ai-artstation-image",
+        id: image.id, // Include ID for tagging when dropped on category
         base64: image.thumbnail || null,
         file_path: image.file_path,
         width: parseInt(image.size.split("x")[0]) || 0,
@@ -251,21 +310,25 @@ export function GalleryPage({
       {/* Header */}
       <div className="p-4 border-b">
         <div className="flex items-center justify-between mb-4">
-          <h1 className="text-xl font-bold">Generation History</h1>
-          <span className="text-sm text-muted-foreground">{total} images</span>
+          <h1 className="text-xl font-bold">
+            {selectedAssetType
+              ? ({ character: "角色", background: "背景", style: "风格", prop: "道具" }[selectedAssetType])
+              : "生成历史"}
+          </h1>
+          <span className="text-sm text-muted-foreground">{total} 张图片</span>
         </div>
         <form onSubmit={handleSearch} className="flex gap-2">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
-              placeholder="Search by prompt..."
+              placeholder="按提示词搜索..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9"
             />
           </div>
           <Button type="submit" variant="secondary">
-            Search
+            搜索
           </Button>
           {searchQuery && (
             <Button
@@ -286,12 +349,20 @@ export function GalleryPage({
 
       {/* Grid */}
       <div className="flex-1 overflow-auto p-4">
-        {tasks.length === 0 && galleryItems.length === 0 ? (
+        {filter === "videos" ? (
+          <div className="h-full flex items-center justify-center">
+            <div className="text-center text-muted-foreground">
+              <Video className="mx-auto h-16 w-16 mb-4 stroke-1" />
+              <p className="text-lg font-medium">暂无视频</p>
+              <p className="text-sm mt-2">视频生成功能即将推出</p>
+            </div>
+          </div>
+        ) : tasks.length === 0 && galleryItems.length === 0 ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-center text-muted-foreground">
               <ImageIcon className="mx-auto h-16 w-16 mb-4 stroke-1" />
-              <p className="text-lg font-medium">No images yet</p>
-              <p className="text-sm mt-2">Generated images will appear here</p>
+              <p className="text-lg font-medium">暂无图片</p>
+              <p className="text-sm mt-2">生成的图片将显示在这里</p>
             </div>
           </div>
         ) : (
@@ -320,10 +391,12 @@ export function GalleryPage({
                   );
                 }
                 const image = item.image;
+                const isConfirmingDelete = confirmDeleteId === image.id;
                 return (
                   <Card
                     key={image.id}
                     className="group overflow-hidden"
+                    onMouseLeave={handleMouseLeave}
                   >
                     <CardContent className="p-0 relative">
                       {image.thumbnail ? (
@@ -343,6 +416,37 @@ export function GalleryPage({
                           <ImageIcon className="w-8 h-8 text-muted-foreground" />
                         </div>
                       )}
+                      {/* Tag badges - show at top left */}
+                      {image.asset_types.length > 0 && (
+                        <div className="absolute top-2 left-2 flex flex-wrap gap-1 max-w-[calc(100%-16px)] z-10">
+                          {image.asset_types.map((assetType) => {
+                            const Icon = assetTypeIcons[assetType as AssetType];
+                            return (
+                              <div
+                                key={assetType}
+                                className={cn(
+                                  "flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium",
+                                  "bg-black/70 text-white group/tag"
+                                )}
+                              >
+                                <Icon className="w-2.5 h-2.5" />
+                                <span className="capitalize">{assetType}</span>
+                                {onRemoveTag && (
+                                  <button
+                                    className="ml-0.5 opacity-0 group-hover/tag:opacity-100 hover:text-red-400 transition-opacity"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onRemoveTag(image.id, assetType as AssetType);
+                                    }}
+                                  >
+                                    <X className="w-2.5 h-2.5" />
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                       <div
                         className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity p-2 flex flex-col justify-end pointer-events-none"
                       >
@@ -353,23 +457,25 @@ export function GalleryPage({
                           {new Date(image.created_at).toLocaleDateString()}
                         </p>
                       </div>
-                      <div className="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                        <div className="bg-black/60 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
-                          <GripVertical className="w-3 h-3" />
-                          Drag
-                        </div>
-                      </div>
-                      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className={cn(
+                        "absolute top-2 right-2 transition-opacity",
+                        isConfirmingDelete ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                      )}>
                         <Button
-                          size="icon"
+                          size={isConfirmingDelete ? "sm" : "icon"}
                           variant="destructive"
-                          className="h-7 w-7"
+                          className={isConfirmingDelete ? "h-7 text-xs" : "h-7 w-7"}
+                          disabled={isDeleting && isConfirmingDelete}
                           onClick={(e) => {
                             e.stopPropagation();
                             handleDeleteClick(image);
                           }}
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          {isConfirmingDelete ? (
+                            isDeleting ? "..." : "确认"
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5" />
+                          )}
                         </Button>
                       </div>
                     </CardContent>
@@ -388,10 +494,10 @@ export function GalleryPage({
                   {loading ? (
                     <>
                       <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Loading...
+                      加载中...
                     </>
                   ) : (
-                    "Load More"
+                    "加载更多"
                   )}
                 </Button>
               </div>
@@ -450,27 +556,28 @@ export function GalleryPage({
                 <div className="flex gap-2">
                   <Button onClick={() => openFile(selectedImage.file_path)}>
                     <ExternalLink className="w-4 h-4 mr-2" />
-                    Open in Viewer
+                    在查看器中打开
                   </Button>
                   <Button
                     variant="outline"
-                    onClick={() => {
-                      const dir = selectedImage.file_path.substring(
-                        0,
-                        selectedImage.file_path.lastIndexOf("/")
-                      );
-                      openFolder(dir);
-                    }}
+                    onClick={() => revealFile(selectedImage.file_path)}
                   >
                     <FolderOpen className="w-4 h-4 mr-2" />
-                    Open Folder
+                    打开文件夹
                   </Button>
                   <Button
                     variant="destructive"
-                    onClick={() => handleDeleteClick(selectedImage)}
+                    onClick={handleModalDelete}
+                    disabled={isDeleting}
                   >
-                    <Trash2 className="w-4 h-4 mr-2" />
-                    Delete
+                    {modalConfirmDelete ? (
+                      isDeleting ? "删除中..." : "确认删除"
+                    ) : (
+                      <>
+                        <Trash2 className="w-4 h-4 mr-2" />
+                        删除
+                      </>
+                    )}
                   </Button>
                 </div>
               </>
@@ -478,35 +585,6 @@ export function GalleryPage({
           </div>
         </DialogContent>
       </Dialog>
-
-      {/* Delete Confirmation Dialog */}
-      <AlertDialog open={!!imageToDelete} onOpenChange={(open: boolean) => !open && setImageToDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Image</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete this image? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleConfirmDelete}
-              disabled={isDeleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {isDeleting ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Deleting...
-                </>
-              ) : (
-                "Delete"
-              )}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
 
       {/* Task Image Preview Modal */}
       <TaskImagePreview
@@ -521,7 +599,7 @@ export function GalleryPage({
         open={!!previewBundle}
         onOpenChange={(open) => !open && setPreviewBundle(null)}
         onOpenFile={openFile}
-        onOpenFolder={openFolder}
+        onRevealFile={revealFile}
         onReadImageRaw={readImageRaw}
       />
 
@@ -529,13 +607,13 @@ export function GalleryPage({
       <AlertDialog open={!!bundleToDelete} onOpenChange={(open: boolean) => !open && setBundleToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Image Bundle</AlertDialogTitle>
+            <AlertDialogTitle>删除图片组</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete all {bundleToDelete?.images.length || 0} images in this bundle? This action cannot be undone.
+              确定要删除这组中的全部 {bundleToDelete?.images.length || 0} 张图片吗？此操作无法撤销。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>取消</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmBundleDelete}
               disabled={isDeleting}
@@ -544,10 +622,10 @@ export function GalleryPage({
               {isDeleting ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Deleting...
+                  删除中...
                 </>
               ) : (
-                `Delete ${bundleToDelete?.images.length || 0} Images`
+                `删除 ${bundleToDelete?.images.length || 0} 张图片`
               )}
             </AlertDialogAction>
           </AlertDialogFooter>

@@ -9,8 +9,8 @@ import { SettingsPage } from "./components/Settings";
 import { ProjectSelector, WelcomeScreen } from "./components/Project";
 import { Sidebar, OptionsPanel } from "./components/Layout";
 
-import { useProjects, useAssets, useGenerationTasks } from "./hooks";
-import type { Asset } from "./types";
+import { useProjects, useGenerationTasks, useGallery } from "./hooks";
+import type { AssetType, AssetTypeCounts } from "./types";
 
 type ViewMode = "history-images" | "history-videos" | "history-all";
 
@@ -25,8 +25,44 @@ function App() {
     selectProject,
   } = useProjects();
 
-  // Assets state
-  const { assetsByType, loadAssets } = useAssets(currentProject?.id || null);
+  // Gallery - for thumbnail regeneration, tagging, and counts
+  const { regenerateThumbnails, addImageTag, removeImageTag, getAssetTypeCounts } = useGallery();
+
+  // Asset type counts for categories
+  const [assetTypeCounts, setAssetTypeCounts] = useState<AssetTypeCounts>({
+    character: 0,
+    background: 0,
+    style: 0,
+    prop: 0,
+  });
+
+  // Selected asset type for filtering
+  const [selectedAssetType, setSelectedAssetType] = useState<AssetType | null>(null);
+
+  // Regenerate thumbnails for old images on startup (runs once)
+  const thumbnailsRegeneratedRef = useRef(false);
+  useEffect(() => {
+    if (!thumbnailsRegeneratedRef.current) {
+      thumbnailsRegeneratedRef.current = true;
+      regenerateThumbnails().then((count) => {
+        if (count > 0) {
+          console.log(`Regenerated ${count} thumbnails for faster loading`);
+        }
+      });
+    }
+  }, [regenerateThumbnails]);
+
+  // Load asset type counts when project changes
+  const loadCounts = useCallback(async () => {
+    if (currentProject) {
+      const counts = await getAssetTypeCounts(currentProject.id);
+      setAssetTypeCounts(counts);
+    }
+  }, [currentProject, getAssetTypeCounts]);
+
+  useEffect(() => {
+    loadCounts();
+  }, [loadCounts]);
 
   // Refresh trigger for History
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
@@ -46,7 +82,9 @@ function App() {
       refreshResolverRef.current();
       refreshResolverRef.current = null;
     }
-  }, []);
+    // Also refresh counts in case new images were added
+    loadCounts();
+  }, [loadCounts]);
 
   // Generation tasks state
   const {
@@ -54,47 +92,45 @@ function App() {
     startImageTask,
     retryTask,
     dismissTask,
-    hasRunningTasks,
   } = useGenerationTasks({ onTaskComplete: handleTaskComplete });
 
   // View state
   const [viewMode, setViewMode] = useState<ViewMode>("history-all");
   const [showSettings, setShowSettings] = useState(false);
 
-  // Load assets when project changes
-  useEffect(() => {
-    if (currentProject) {
-      loadAssets();
-    }
-  }, [currentProject, loadAssets]);
-
-  // Handle asset click - preview or add to references
-  const handleAssetClick = useCallback((asset: Asset) => {
-    // TODO: Show asset preview dialog
-    console.log("Asset clicked:", asset);
-  }, []);
-
-  // Handle asset drag start
-  const handleAssetDragStart = useCallback((asset: Asset, e: React.DragEvent) => {
-    e.dataTransfer.setData("application/json", JSON.stringify({
-      type: "asset",
-      id: asset.id,
-      name: asset.name,
-      file_path: asset.file_path,
-      thumbnail: asset.thumbnail,
-    }));
-  }, []);
-
-  // Handle import asset
-  const handleImportAsset = useCallback(() => {
-    // TODO: Open file dialog and create asset
-    toast.info("Import asset - coming soon");
-  }, []);
-
   // Handle view mode change from sidebar
   const handleViewModeChange = useCallback((mode: ViewMode) => {
     setViewMode(mode);
   }, []);
+
+  // Handle asset type selection for filtering
+  const handleAssetTypeSelect = useCallback((type: AssetType | null) => {
+    setSelectedAssetType(type);
+  }, []);
+
+  // Handle dropping an image onto a category to tag it
+  const handleDropImageToCategory = useCallback(async (imageId: string, assetType: AssetType) => {
+    try {
+      await addImageTag(imageId, assetType);
+      toast.success(`已标记为${({ character: "角色", background: "背景", style: "风格", prop: "道具" }[assetType])}`);
+      // Refresh gallery and counts
+      setHistoryRefreshKey((prev) => prev + 1);
+    } catch (e) {
+      toast.error(`标记失败: ${e}`);
+    }
+  }, [addImageTag]);
+
+  // Handle removing a tag from an image
+  const handleRemoveImageTag = useCallback(async (imageId: string, assetType: AssetType) => {
+    try {
+      await removeImageTag(imageId, assetType);
+      toast.success(`标签已移除`);
+      // Refresh gallery and counts
+      setHistoryRefreshKey((prev) => prev + 1);
+    } catch (e) {
+      toast.error(`移除标签失败: ${e}`);
+    }
+  }, [removeImageTag]);
 
   // If no projects exist or loading, show welcome screen
   if (!projectsLoading && projects.length === 0) {
@@ -145,7 +181,7 @@ function App() {
         />
         <div className="flex items-center gap-2">
           <span className="text-sm text-muted-foreground">
-            AI Art Station
+            AI 艺术工作站
           </span>
           <Button
             variant="ghost"
@@ -161,12 +197,12 @@ function App() {
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar */}
         <Sidebar
-          assetsByType={assetsByType}
+          assetTypeCounts={assetTypeCounts}
           viewMode={viewMode}
+          selectedAssetType={selectedAssetType}
           onViewModeChange={handleViewModeChange}
-          onAssetClick={handleAssetClick}
-          onAssetDragStart={handleAssetDragStart}
-          onImportAsset={handleImportAsset}
+          onAssetTypeSelect={handleAssetTypeSelect}
+          onDropImageToCategory={handleDropImageToCategory}
         />
 
         {/* Main Workspace */}
@@ -187,6 +223,8 @@ function App() {
               onDismissTask={dismissTask}
               refreshTrigger={historyRefreshKey}
               onRefreshComplete={handleRefreshComplete}
+              selectedAssetType={selectedAssetType}
+              onRemoveTag={handleRemoveImageTag}
             />
           </div>
 
@@ -195,7 +233,6 @@ function App() {
             <OptionsPanel
               projectId={currentProject.id}
               onStartImageTask={startImageTask}
-              hasRunningTasks={hasRunningTasks}
             />
           </div>
         </main>

@@ -34,7 +34,7 @@ export function TaskImagePreview({ task, open, onOpenChange }: TaskImagePreviewP
             <ImageIcon className="w-5 h-5" />
             <span className="line-clamp-1 flex-1">{task.prompt}</span>
             <span className="text-sm font-normal text-muted-foreground">
-              {images.length} images
+              {images.length} 张图片
             </span>
           </DialogTitle>
         </DialogHeader>
@@ -77,7 +77,7 @@ export function TaskImagePreview({ task, open, onOpenChange }: TaskImagePreviewP
         {/* Image info */}
         <div className="flex items-center justify-between text-sm text-muted-foreground pt-2 border-t">
           <span>
-            Image {selectedIndex + 1} of {images.length}
+            第 {selectedIndex + 1} / {images.length} 张
           </span>
           <span>{selectedImage.size}</span>
         </div>

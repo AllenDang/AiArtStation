@@ -1,6 +1,6 @@
 use crate::api::{ApiClient, ImageGenerationRequest};
 use crate::commands::settings::AppState;
-use crate::image_processing::{download_image, image_to_base64, smart_resize};
+use crate::image_processing::{create_thumbnail_base64, download_image, image_to_base64, smart_resize};
 use crate::storage::{Database, ImageRecord};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -127,16 +127,19 @@ pub async fn generate_image(
 
     for img_data in &response.data {
         if let Some(url) = &img_data.url {
-            // Download image
+            // Download image (always organize by date)
             let file_path = download_image(
                 url,
                 &config.output_directory,
-                config.organize_by_date,
+                true,
             ).await.map_err(|e| e.to_string())?;
 
-            // Read file for base64 preview
+            // Read file for base64 preview and thumbnail
             let file_bytes = std::fs::read(&file_path).map_err(|e| e.to_string())?;
             let base64_preview = image_to_base64(&file_bytes).map_err(|e| e.to_string())?;
+
+            // Generate thumbnail for fast gallery loading (200x200)
+            let thumbnail = create_thumbnail_base64(&file_bytes, 200).ok();
 
             let id = Uuid::new_v4().to_string();
             let size = img_data.size.clone().unwrap_or_default();
@@ -147,6 +150,7 @@ pub async fn generate_image(
                 project_id: Some(request.project_id.clone()),
                 batch_id: batch_id.clone(),
                 file_path: file_path.clone(),
+                thumbnail,
                 prompt: request.prompt.clone(),
                 model: config.image_model.clone(),
                 size: size.clone(),
@@ -155,26 +159,12 @@ pub async fn generate_image(
                 reference_images: request.reference_images.clone(),
                 tokens_used: response.usage.total_tokens,
                 created_at: Utc::now(),
+                asset_types: vec![], // Images start untagged
             };
 
             {
                 let db = db_state.database.lock().map_err(|e| e.to_string())?;
                 db.insert_image(&record).map_err(|e| e.to_string())?;
-            }
-
-            // Save metadata JSON if enabled
-            if config.save_metadata {
-                let metadata_path = format!("{}.json", file_path.trim_end_matches(".jpg").trim_end_matches(".png"));
-                let metadata = serde_json::json!({
-                    "prompt": request.prompt,
-                    "model": config.image_model,
-                    "size": size,
-                    "generation_type": generation_type,
-                    "reference_images_count": request.reference_images.len(),
-                    "tokens_used": response.usage.total_tokens,
-                    "created_at": Utc::now().to_rfc3339(),
-                });
-                let _ = std::fs::write(&metadata_path, serde_json::to_string_pretty(&metadata).unwrap());
             }
 
             generated_images.push(GeneratedImageInfo {

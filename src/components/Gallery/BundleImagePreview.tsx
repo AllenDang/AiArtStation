@@ -16,7 +16,7 @@ interface BundleImagePreviewProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onOpenFile: (path: string) => void;
-  onOpenFolder: (path: string) => void;
+  onRevealFile: (path: string) => void;
   onReadImageRaw: (path: string) => Promise<string>;
 }
 
@@ -25,7 +25,7 @@ export function BundleImagePreview({
   open,
   onOpenChange,
   onOpenFile,
-  onOpenFolder,
+  onRevealFile,
   onReadImageRaw,
 }: BundleImagePreviewProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -77,7 +77,7 @@ export function BundleImagePreview({
             <ImageIcon className="w-5 h-5" />
             <span className="line-clamp-1 flex-1">{bundle.prompt}</span>
             <span className="text-sm font-normal text-muted-foreground">
-              {images.length} images
+              {images.length} 张图片
             </span>
           </DialogTitle>
         </DialogHeader>
@@ -140,7 +140,7 @@ export function BundleImagePreview({
           <div className="flex items-center justify-between pt-2 border-t">
             <div className="flex items-center gap-4 text-sm text-muted-foreground">
               <span>
-                Image {selectedIndex + 1} of {images.length}
+                第 {selectedIndex + 1} / {images.length} 张
               </span>
               <span>{selectedImage.size}</span>
               <span>{selectedImage.tokens_used} tokens</span>
@@ -152,21 +152,15 @@ export function BundleImagePreview({
                 onClick={() => onOpenFile(selectedImage.file_path)}
               >
                 <ExternalLink className="w-4 h-4 mr-2" />
-                Open
+                打开
               </Button>
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => {
-                  const dir = selectedImage.file_path.substring(
-                    0,
-                    selectedImage.file_path.lastIndexOf("/")
-                  );
-                  onOpenFolder(dir);
-                }}
+                onClick={() => onRevealFile(selectedImage.file_path)}
               >
                 <FolderOpen className="w-4 h-4 mr-2" />
-                Folder
+                文件夹
               </Button>
             </div>
           </div>

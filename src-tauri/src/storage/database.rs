@@ -37,6 +37,7 @@ pub struct ImageRecord {
     pub project_id: Option<String>,
     pub batch_id: Option<String>, // Groups sequential images together
     pub file_path: String,
+    pub thumbnail: Option<String>, // Pre-generated base64 thumbnail for fast loading
     pub prompt: String,
     pub model: String,
     pub size: String,
@@ -45,6 +46,7 @@ pub struct ImageRecord {
     pub reference_images: Vec<String>,
     pub tokens_used: i64,
     pub created_at: DateTime<Utc>,
+    pub asset_types: Vec<String>, // ["character", "background", "style", "prop"] - for filtering, multiple allowed
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,6 +232,36 @@ impl Database {
                 "CREATE INDEX IF NOT EXISTS idx_images_batch_id ON images(batch_id)",
                 [],
             ).context("Failed to create batch_id index")?;
+        }
+
+        // Migration: Add thumbnail column to images table for fast loading
+        if !columns.contains(&"thumbnail".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE images ADD COLUMN thumbnail TEXT",
+                [],
+            ).context("Failed to add thumbnail to images table")?;
+        }
+
+        // Migration: Add asset_type column to images table for categorization/filtering (legacy)
+        if !columns.contains(&"asset_type".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE images ADD COLUMN asset_type TEXT",
+                [],
+            ).context("Failed to add asset_type to images table")?;
+        }
+
+        // Migration: Add asset_types column (JSON array) for multiple tags per image
+        if !columns.contains(&"asset_types".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE images ADD COLUMN asset_types TEXT NOT NULL DEFAULT '[]'",
+                [],
+            ).context("Failed to add asset_types to images table")?;
+
+            // Migrate existing asset_type data to asset_types array
+            self.conn.execute(
+                "UPDATE images SET asset_types = json_array(asset_type) WHERE asset_type IS NOT NULL AND asset_type != ''",
+                [],
+            ).context("Failed to migrate asset_type to asset_types")?;
         }
 
         Ok(())
@@ -419,15 +451,17 @@ impl Database {
 
     pub fn insert_image(&self, record: &ImageRecord) -> Result<()> {
         let reference_json = serde_json::to_string(&record.reference_images)?;
+        let asset_types_json = serde_json::to_string(&record.asset_types)?;
 
         self.conn.execute(
-            "INSERT INTO images (id, project_id, batch_id, file_path, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO images (id, project_id, batch_id, file_path, thumbnail, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 record.id,
                 record.project_id,
                 record.batch_id,
                 record.file_path,
+                record.thumbnail,
                 record.prompt,
                 record.model,
                 record.size,
@@ -436,6 +470,7 @@ impl Database {
                 reference_json,
                 record.tokens_used,
                 record.created_at.to_rfc3339(),
+                asset_types_json,
             ],
         ).context("Failed to insert image record")?;
 
@@ -444,7 +479,7 @@ impl Database {
 
     pub fn get_images_by_project(&self, project_id: &str, limit: i64, offset: i64) -> Result<Vec<ImageRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, batch_id, file_path, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at
+            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
              FROM images
              WHERE project_id = ?1
              ORDER BY created_at DESC
@@ -457,7 +492,7 @@ impl Database {
 
     pub fn get_image_by_id(&self, id: &str) -> Result<Option<ImageRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, batch_id, file_path, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at
+            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
              FROM images WHERE id = ?1"
         )?;
 
@@ -472,7 +507,7 @@ impl Database {
     pub fn search_images(&self, query: &str, limit: i64) -> Result<Vec<ImageRecord>> {
         let search_pattern = format!("%{}%", query);
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, batch_id, file_path, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at
+            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
              FROM images
              WHERE prompt LIKE ?1
              ORDER BY created_at DESC
@@ -488,6 +523,28 @@ impl Database {
         Ok(rows_affected > 0)
     }
 
+    /// Update the thumbnail for an existing image
+    pub fn update_image_thumbnail(&self, id: &str, thumbnail: &str) -> Result<bool> {
+        let rows = self.conn.execute(
+            "UPDATE images SET thumbnail = ?1 WHERE id = ?2",
+            params![thumbnail, id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Get images that don't have thumbnails cached
+    pub fn get_images_without_thumbnails(&self, limit: i64) -> Result<Vec<ImageRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
+             FROM images
+             WHERE thumbnail IS NULL
+             LIMIT ?1"
+        )?;
+
+        let rows = stmt.query_map(params![limit], Self::map_image_row)?;
+        rows.collect::<Result<Vec<_>, _>>().context("Failed to get images without thumbnails")
+    }
+
     pub fn get_image_count(&self, project_id: Option<&str>) -> Result<i64> {
         let count: i64 = match project_id {
             Some(pid) => self.conn.query_row(
@@ -500,24 +557,115 @@ impl Database {
         Ok(count)
     }
 
+    /// Add an asset type tag to an image
+    pub fn add_image_asset_type(&self, id: &str, asset_type: &str) -> Result<bool> {
+        // Get current asset_types
+        let current: String = self.conn.query_row(
+            "SELECT asset_types FROM images WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        ).unwrap_or_else(|_| "[]".to_string());
+
+        let mut types: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
+
+        // Only add if not already present
+        if !types.contains(&asset_type.to_string()) {
+            types.push(asset_type.to_string());
+            let new_json = serde_json::to_string(&types)?;
+            let rows = self.conn.execute(
+                "UPDATE images SET asset_types = ?1 WHERE id = ?2",
+                params![new_json, id],
+            )?;
+            Ok(rows > 0)
+        } else {
+            Ok(false) // Already tagged
+        }
+    }
+
+    /// Remove an asset type tag from an image
+    pub fn remove_image_asset_type(&self, id: &str, asset_type: &str) -> Result<bool> {
+        // Get current asset_types
+        let current: String = self.conn.query_row(
+            "SELECT asset_types FROM images WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        ).unwrap_or_else(|_| "[]".to_string());
+
+        let mut types: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
+
+        // Remove if present
+        let original_len = types.len();
+        types.retain(|t| t != asset_type);
+
+        if types.len() != original_len {
+            let new_json = serde_json::to_string(&types)?;
+            let rows = self.conn.execute(
+                "UPDATE images SET asset_types = ?1 WHERE id = ?2",
+                params![new_json, id],
+            )?;
+            Ok(rows > 0)
+        } else {
+            Ok(false) // Wasn't tagged
+        }
+    }
+
+    /// Get counts of images by asset_type for a project
+    pub fn get_asset_type_counts(&self, project_id: &str) -> Result<Vec<(String, i64)>> {
+        // Count images that contain each asset type in their JSON array
+        let asset_types = ["character", "background", "style", "prop"];
+        let mut counts = Vec::new();
+
+        for asset_type in asset_types {
+            let pattern = format!("%\"{}\"%" , asset_type);
+            let count: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM images WHERE project_id = ?1 AND asset_types LIKE ?2",
+                params![project_id, pattern],
+                |row| row.get(0),
+            )?;
+            if count > 0 {
+                counts.push((asset_type.to_string(), count));
+            }
+        }
+
+        Ok(counts)
+    }
+
+    /// Get images filtered by asset_type (images that have this type in their array)
+    pub fn get_images_by_asset_type(&self, project_id: &str, asset_type: &str, limit: i64, offset: i64) -> Result<Vec<ImageRecord>> {
+        let pattern = format!("%\"{}\"%" , asset_type);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
+             FROM images
+             WHERE project_id = ?1 AND asset_types LIKE ?2
+             ORDER BY created_at DESC
+             LIMIT ?3 OFFSET ?4"
+        )?;
+
+        let rows = stmt.query_map(params![project_id, pattern, limit, offset], Self::map_image_row)?;
+        rows.collect::<Result<Vec<_>, _>>().context("Failed to get images by asset type")
+    }
+
     fn map_image_row(row: &rusqlite::Row) -> rusqlite::Result<ImageRecord> {
-        let reference_json: String = row.get(9)?;
-        let created_at_str: String = row.get(11)?;
+        let reference_json: String = row.get(10)?;
+        let created_at_str: String = row.get(12)?;
+        let asset_types_json: String = row.get::<_, Option<String>>(13)?.unwrap_or_else(|| "[]".to_string());
         Ok(ImageRecord {
             id: row.get(0)?,
             project_id: row.get(1)?,
             batch_id: row.get(2)?,
             file_path: row.get(3)?,
-            prompt: row.get(4)?,
-            model: row.get(5)?,
-            size: row.get(6)?,
-            aspect_ratio: row.get(7)?,
-            generation_type: row.get(8)?,
+            thumbnail: row.get(4)?,
+            prompt: row.get(5)?,
+            model: row.get(6)?,
+            size: row.get(7)?,
+            aspect_ratio: row.get(8)?,
+            generation_type: row.get(9)?,
             reference_images: serde_json::from_str(&reference_json).unwrap_or_default(),
-            tokens_used: row.get(10)?,
+            tokens_used: row.get(11)?,
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
+            asset_types: serde_json::from_str(&asset_types_json).unwrap_or_default(),
         })
     }
 
@@ -650,5 +798,47 @@ impl Database {
                     .ok()
             }),
         })
+    }
+
+    // ========================================================================
+    // Cleanup Methods
+    // ========================================================================
+
+    /// Remove database records for files that no longer exist on disk
+    pub fn cleanup_missing_files(&self) -> Result<(usize, usize)> {
+        let mut images_removed = 0;
+        let mut videos_removed = 0;
+
+        // Cleanup images
+        let mut stmt = self.conn.prepare("SELECT id, file_path FROM images")?;
+        let image_rows: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (id, file_path) in image_rows {
+            if !std::path::Path::new(&file_path).exists() {
+                if self.delete_image(&id)? {
+                    images_removed += 1;
+                }
+            }
+        }
+
+        // Cleanup videos (only completed ones with file_path)
+        let mut stmt = self.conn.prepare("SELECT id, file_path FROM videos WHERE file_path IS NOT NULL")?;
+        let video_rows: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (id, file_path) in video_rows {
+            if !std::path::Path::new(&file_path).exists() {
+                if self.delete_video(&id)? {
+                    videos_removed += 1;
+                }
+            }
+        }
+
+        Ok((images_removed, videos_removed))
     }
 }

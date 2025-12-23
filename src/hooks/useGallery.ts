@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useState, useCallback } from "react";
-import type { GalleryImage, GalleryResponse } from "../types";
+import type { GalleryImage, GalleryResponse, AssetType, AssetTypeCounts } from "../types";
 
 export function useGallery() {
   const [images, setImages] = useState<GalleryImage[]>([]);
@@ -89,6 +89,94 @@ export function useGallery() {
     }
   }, []);
 
+  // Regenerate thumbnails for images that don't have them cached
+  // This backfills old images for instant loading
+  const regenerateThumbnails = useCallback(async () => {
+    try {
+      const count = await invoke<number>("regenerate_thumbnails");
+      return count;
+    } catch (e) {
+      console.error("Failed to regenerate thumbnails:", e);
+      return 0;
+    }
+  }, []);
+
+  // Add an asset type tag to an image
+  const addImageTag = useCallback(async (imageId: string, assetType: AssetType) => {
+    try {
+      await invoke<boolean>("add_image_tag", { imageId, assetType });
+      // Update local state
+      setImages((prev) =>
+        prev.map((img) =>
+          img.id === imageId && !img.asset_types.includes(assetType)
+            ? { ...img, asset_types: [...img.asset_types, assetType] }
+            : img
+        )
+      );
+    } catch (e) {
+      throw new Error(`Failed to add tag: ${e}`);
+    }
+  }, []);
+
+  // Remove an asset type tag from an image
+  const removeImageTag = useCallback(async (imageId: string, assetType: AssetType) => {
+    try {
+      await invoke<boolean>("remove_image_tag", { imageId, assetType });
+      // Update local state
+      setImages((prev) =>
+        prev.map((img) =>
+          img.id === imageId
+            ? { ...img, asset_types: img.asset_types.filter((t) => t !== assetType) }
+            : img
+        )
+      );
+    } catch (e) {
+      throw new Error(`Failed to remove tag: ${e}`);
+    }
+  }, []);
+
+  // Get counts of images by asset type for a project
+  const getAssetTypeCounts = useCallback(async (projectId: string): Promise<AssetTypeCounts> => {
+    try {
+      const counts = await invoke<AssetTypeCounts>("get_asset_type_counts", { projectId });
+      return counts;
+    } catch (e) {
+      console.error("Failed to get asset type counts:", e);
+      return { character: 0, background: 0, style: 0, prop: 0 };
+    }
+  }, []);
+
+  // Load gallery filtered by asset type
+  const loadGalleryByAssetType = useCallback(
+    async (projectId: string, assetType: AssetType, page: number = 0, pageSize: number = 20, includeThumbnails: boolean = true) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await invoke<GalleryResponse>("get_gallery_by_asset_type", {
+          projectId,
+          assetType,
+          page,
+          pageSize,
+          includeThumbnails,
+        });
+        if (page === 0) {
+          setImages(response.images);
+        } else {
+          setImages((prev) => [...prev, ...response.images]);
+        }
+        setTotal(response.total);
+        setHasMore(response.has_more);
+        return response;
+      } catch (e) {
+        setError(String(e));
+        throw e;
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
+
   return {
     images,
     total,
@@ -100,5 +188,10 @@ export function useGallery() {
     getImageDetail,
     deleteImage,
     readImageRaw,
+    regenerateThumbnails,
+    addImageTag,
+    removeImageTag,
+    getAssetTypeCounts,
+    loadGalleryByAssetType,
   };
 }

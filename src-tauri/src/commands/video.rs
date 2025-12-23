@@ -239,7 +239,7 @@ pub async fn poll_video_task(
             // Download video if completed
             if let Some(content) = &status_response.content {
                 if let Some(video_url) = &content.video_url {
-                    download_video(video_url, &config.output_directory, config.organize_by_date)
+                    download_video(video_url, &config.output_directory, true)
                         .await
                         .ok()
                 } else {

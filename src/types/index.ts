@@ -104,8 +104,6 @@ export interface ConfigResponse {
   video_model: string;
   output_directory: string;
   output_format: string;
-  organize_by_date: boolean;
-  save_metadata: boolean;
   default_size: string;
   default_aspect_ratio: string;
   watermark: boolean;
@@ -118,11 +116,6 @@ export interface SaveConfigRequest {
   video_model: string;
   output_directory: string;
   output_format: string;
-  organize_by_date: boolean;
-  save_metadata: boolean;
-  default_size?: string;
-  default_aspect_ratio?: string;
-  watermark?: boolean;
 }
 
 // Image Generation
@@ -187,6 +180,15 @@ export interface GalleryImage {
   tokens_used: number;
   created_at: string;
   thumbnail?: string;
+  asset_types: AssetType[]; // Multiple tags allowed for categorization/filtering
+}
+
+// Asset type counts for sidebar
+export interface AssetTypeCounts {
+  character: number;
+  background: number;
+  style: number;
+  prop: number;
 }
 
 // Image bundle for grouped sequential images
