@@ -30,6 +30,7 @@ interface SidebarProps {
   onViewModeChange: (mode: ViewMode) => void;
   onAssetTypeSelect: (type: AssetType | null) => void;
   onDropImageToCategory?: (imageId: string, assetType: AssetType) => void;
+  onDropVideoToCategory?: (videoId: string, assetType: AssetType) => void;
 }
 
 const assetTypeConfig: Record<AssetType, { label: string; icon: React.ElementType }> = {
@@ -46,6 +47,7 @@ export function Sidebar({
   onViewModeChange,
   onAssetTypeSelect,
   onDropImageToCategory,
+  onDropVideoToCategory,
 }: SidebarProps) {
   const [dragOverType, setDragOverType] = useState<AssetType | null>(null);
 
@@ -66,22 +68,24 @@ export function Sidebar({
     e.stopPropagation();
     setDragOverType(null);
 
-    if (!onDropImageToCategory) return;
-
-    // Try to parse the dropped data
-    const textData = e.dataTransfer.getData("text/plain");
+    // Try to parse the dropped data - check both text/plain and application/json
+    const textData = e.dataTransfer.getData("text/plain") || e.dataTransfer.getData("application/json");
     if (textData) {
       try {
         const parsed = JSON.parse(textData);
         // Check if it's our image format
-        if (parsed.type === "ai-artstation-image" && parsed.id) {
+        if (parsed.type === "ai-artstation-image" && parsed.id && onDropImageToCategory) {
           onDropImageToCategory(parsed.id, assetType);
+        }
+        // Check if it's our video format
+        else if (parsed.type === "ai-artstation-video" && parsed.video_id && onDropVideoToCategory) {
+          onDropVideoToCategory(parsed.video_id, assetType);
         }
       } catch {
         // Not JSON, ignore
       }
     }
-  }, [onDropImageToCategory]);
+  }, [onDropImageToCategory, onDropVideoToCategory]);
 
   const getCategoryCount = (type: AssetType): number => {
     return assetTypeCounts[type] || 0;
@@ -100,7 +104,7 @@ export function Sidebar({
               </h3>
             </div>
             <p className="text-xs text-muted-foreground mb-2 px-1">
-              拖放图片到这里进行标记
+              拖放图片或视频进行标记
             </p>
 
             <div className="space-y-1">

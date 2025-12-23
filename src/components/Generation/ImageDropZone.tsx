@@ -1,10 +1,16 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import type { ReferenceImage } from "../../types";
-import { ImagePlus, X, Plus, Loader2 } from "lucide-react";
+import type { ReferenceImage, VideoDragData, DropZoneType } from "../../types";
+import { ImagePlus, X, Plus, Loader2, Video } from "lucide-react";
 
 interface ImageDropZoneProps {
   images: ReferenceImage[];
@@ -21,6 +27,10 @@ interface ImageDropZoneProps {
   label?: string;
   compact?: boolean;
   singleImageFill?: boolean; // When true and maxImages=1, image fills the container
+  // Video drag support
+  dropZoneType?: DropZoneType;
+  // Callback for coordinated video frame drops (first-last mode)
+  onVideoFrameDrop?: (first?: ReferenceImage, last?: ReferenceImage) => void;
 }
 
 export function ImageDropZone({
@@ -31,9 +41,106 @@ export function ImageDropZone({
   label,
   compact = false,
   singleImageFill = false,
+  dropZoneType = "image-ref",
+  onVideoFrameDrop,
 }: ImageDropZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [loading, setLoading] = useState(false);
+  // State for video frame selection menu
+  const [pendingVideoData, setPendingVideoData] = useState<VideoDragData | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuTriggerRef = useRef<HTMLDivElement>(null);
+
+  // Helper to create a ReferenceImage from video frame data
+  const createRefImageFromFrame = useCallback((
+    thumbnail?: string,
+    path?: string
+  ): ReferenceImage | null => {
+    if (!thumbnail && !path) return null;
+    return {
+      id: crypto.randomUUID(),
+      base64: thumbnail || "", // Use thumbnail for preview
+      width: 0,
+      height: 0,
+      was_resized: false,
+      original_width: 0,
+      original_height: 0,
+      file_path: path, // Store path for full-res loading
+    };
+  }, []);
+
+  // Handle video frame selection from menu
+  const handleFrameSelect = useCallback((frame: "first" | "last") => {
+    if (!pendingVideoData) return;
+
+    const thumbnail = frame === "first"
+      ? pendingVideoData.first_frame_thumbnail
+      : pendingVideoData.last_frame_thumbnail;
+    const path = frame === "first"
+      ? pendingVideoData.first_frame_path
+      : pendingVideoData.last_frame_path;
+
+    const newImage = createRefImageFromFrame(thumbnail, path);
+    if (newImage) {
+      onImagesChange(singleImageFill ? [newImage] : [...images, newImage]);
+    }
+
+    setPendingVideoData(null);
+    setMenuOpen(false);
+  }, [pendingVideoData, createRefImageFromFrame, onImagesChange, singleImageFill, images]);
+
+  // Handle video drop for different zone types
+  const handleVideoDrop = useCallback((videoData: VideoDragData) => {
+    const firstImage = createRefImageFromFrame(
+      videoData.first_frame_thumbnail,
+      videoData.first_frame_path
+    );
+    const lastImage = createRefImageFromFrame(
+      videoData.last_frame_thumbnail,
+      videoData.last_frame_path
+    );
+
+    switch (dropZoneType) {
+      case "image-ref":
+      case "video-ref":
+        // Add both frames as references
+        const newImages: ReferenceImage[] = [];
+        if (firstImage) newImages.push(firstImage);
+        if (lastImage) newImages.push(lastImage);
+        if (newImages.length > 0) {
+          const remaining = maxImages - images.length;
+          onImagesChange([...images, ...newImages.slice(0, remaining)]);
+        }
+        break;
+
+      case "video-first":
+      case "video-last":
+        // Show menu to let user pick which frame
+        if (firstImage || lastImage) {
+          setPendingVideoData(videoData);
+          setMenuOpen(true);
+        }
+        break;
+
+      case "video-both-first":
+        // Auto-fill with first frame, coordinate with last frame zone
+        if (firstImage) {
+          onImagesChange([firstImage]);
+        }
+        // Also trigger coordinated drop for last frame zone
+        if (onVideoFrameDrop) {
+          onVideoFrameDrop(firstImage || undefined, lastImage || undefined);
+        }
+        break;
+
+      case "video-both-last":
+        // Auto-fill with last frame
+        if (lastImage) {
+          onImagesChange([lastImage]);
+        }
+        break;
+    }
+  }, [dropZoneType, createRefImageFromFrame, images, maxImages, onImagesChange, onVideoFrameDrop]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -53,14 +160,22 @@ export function ImageDropZone({
       e.stopPropagation();
       setIsDragging(false);
 
-      // Check for image data (from generated results or history)
-      const textData = e.dataTransfer.getData("text/plain");
-      if (textData) {
+      // Check for JSON data (from generated results, history, or videos)
+      const jsonData = e.dataTransfer.getData("application/json") || e.dataTransfer.getData("text/plain");
+      if (jsonData) {
         try {
-          const imageData = JSON.parse(textData);
-          // Verify it's our image data format
+          const dragData = JSON.parse(jsonData);
+
+          // Handle video drops
+          if (dragData.type === "ai-artstation-video") {
+            handleVideoDrop(dragData as VideoDragData);
+            return;
+          }
+
+          // Handle image drops - verify it's our image data format
           // For singleImageFill, always allow (will replace). Otherwise check limit.
-          if (imageData.type === "ai-artstation-image" && (singleImageFill || images.length < maxImages)) {
+          if (dragData.type === "ai-artstation-image" && (singleImageFill || images.length < maxImages)) {
+            const imageData = dragData;
             // Check for duplicate by file_path (skip for singleImageFill as it replaces)
             if (!singleImageFill && imageData.file_path && images.some(img => img.file_path === imageData.file_path)) {
               return; // Already exists, skip
@@ -149,7 +264,7 @@ export function ImageDropZone({
         setLoading(false);
       }
     },
-    [images, maxImages, onImagesChange, singleImageFill]
+    [images, maxImages, onImagesChange, singleImageFill, handleVideoDrop]
   );
 
   const handleSelectFiles = async () => {
@@ -242,7 +357,7 @@ export function ImageDropZone({
           e.preventDefault();
         }}
         className={cn(
-          "border-2 border-dashed rounded-lg transition-colors",
+          "border-2 border-dashed rounded-lg transition-colors relative",
           singleImageFill
             ? "p-1 flex-1 min-h-0 overflow-hidden"
             : compact
@@ -341,6 +456,43 @@ export function ImageDropZone({
             )}
           </div>
         )}
+
+        {/* Frame selection dropdown - positioned at top center of drop zone */}
+        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+          <DropdownMenuTrigger asChild>
+            <div ref={menuTriggerRef} className="absolute top-2 left-1/2 -translate-x-1/2 w-0 h-0" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="center" className="min-w-[160px]">
+            <div className="px-2 py-1.5 text-sm font-semibold flex items-center gap-2">
+              <Video className="w-4 h-4" />
+              选择帧
+            </div>
+            {pendingVideoData?.first_frame_thumbnail && (
+              <DropdownMenuItem onClick={() => handleFrameSelect("first")}>
+                <div className="flex items-center gap-2">
+                  <img
+                    src={pendingVideoData.first_frame_thumbnail}
+                    alt="First frame"
+                    className="w-8 h-8 object-cover rounded"
+                  />
+                  <span>使用首帧</span>
+                </div>
+              </DropdownMenuItem>
+            )}
+            {pendingVideoData?.last_frame_thumbnail && (
+              <DropdownMenuItem onClick={() => handleFrameSelect("last")}>
+                <div className="flex items-center gap-2">
+                  <img
+                    src={pendingVideoData.last_frame_thumbnail}
+                    alt="Last frame"
+                    className="w-8 h-8 object-cover rounded"
+                  />
+                  <span>使用尾帧</span>
+                </div>
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   );

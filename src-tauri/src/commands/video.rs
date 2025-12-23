@@ -13,7 +13,10 @@ pub struct Video {
     pub project_id: Option<String>,
     pub task_id: String,
     pub file_path: Option<String>,
-    pub thumbnail: Option<String>,
+    pub first_frame_thumbnail: Option<String>,
+    pub last_frame_thumbnail: Option<String>,
+    pub first_frame_path: Option<String>,
+    pub last_frame_path: Option<String>,
     pub prompt: String,
     pub model: String,
     pub generation_type: String,
@@ -27,6 +30,7 @@ pub struct Video {
     pub tokens_used: Option<i64>,
     pub created_at: String,
     pub completed_at: Option<String>,
+    pub asset_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,7 +171,10 @@ pub async fn generate_video(
         project_id: Some(request.project_id),
         task_id: response.id.clone(),
         file_path: None,
-        thumbnail: None,
+        first_frame_thumbnail: None,
+        last_frame_thumbnail: None,
+        first_frame_path: None,
+        last_frame_path: None,
         prompt: request.prompt,
         model: config.video_model,
         generation_type: request.generation_type,
@@ -181,6 +188,7 @@ pub async fn generate_video(
         tokens_used: None,
         created_at: Utc::now(),
         completed_at: None,
+        asset_types: Vec::new(),
     };
 
     {
@@ -267,7 +275,10 @@ pub async fn poll_video_task(
             let update = VideoStatusUpdate {
                 status: new_status,
                 file_path: downloaded.as_ref().map(|d| d.file_path.as_str()),
-                thumbnail: downloaded.as_ref().and_then(|d| d.thumbnail.as_deref()),
+                first_frame_thumbnail: downloaded.as_ref().and_then(|d| d.first_frame_thumbnail.as_deref()),
+                last_frame_thumbnail: downloaded.as_ref().and_then(|d| d.last_frame_thumbnail.as_deref()),
+                first_frame_path: downloaded.as_ref().and_then(|d| d.first_frame_path.as_deref()),
+                last_frame_path: downloaded.as_ref().and_then(|d| d.last_frame_path.as_deref()),
                 resolution: status_response.resolution.as_deref(),
                 duration: status_response.duration,
                 fps: status_response.framespersecond,
@@ -346,13 +357,42 @@ pub async fn delete_video(
 
     if delete_file {
         if let Ok(Some(record)) = db.get_video_by_id(&id) {
+            // Delete video file
             if let Some(file_path) = record.file_path {
                 let _ = std::fs::remove_file(&file_path);
+            }
+            // Delete first frame image
+            if let Some(first_frame_path) = record.first_frame_path {
+                let _ = std::fs::remove_file(&first_frame_path);
+            }
+            // Delete last frame image
+            if let Some(last_frame_path) = record.last_frame_path {
+                let _ = std::fs::remove_file(&last_frame_path);
             }
         }
     }
 
     db.delete_video(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn add_video_tag(
+    db_state: State<'_, DbState>,
+    id: String,
+    asset_type: String,
+) -> Result<bool, String> {
+    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    db.add_video_asset_type(&id, &asset_type).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn remove_video_tag(
+    db_state: State<'_, DbState>,
+    id: String,
+    asset_type: String,
+) -> Result<bool, String> {
+    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    db.remove_video_asset_type(&id, &asset_type).map_err(|e| e.to_string())
 }
 
 fn map_to_video(record: VideoRecord) -> Video {
@@ -361,7 +401,10 @@ fn map_to_video(record: VideoRecord) -> Video {
         project_id: record.project_id,
         task_id: record.task_id,
         file_path: record.file_path,
-        thumbnail: record.thumbnail,
+        first_frame_thumbnail: record.first_frame_thumbnail,
+        last_frame_thumbnail: record.last_frame_thumbnail,
+        first_frame_path: record.first_frame_path,
+        last_frame_path: record.last_frame_path,
         prompt: record.prompt,
         model: record.model,
         generation_type: record.generation_type,
@@ -375,13 +418,17 @@ fn map_to_video(record: VideoRecord) -> Video {
         tokens_used: record.tokens_used,
         created_at: record.created_at.to_rfc3339(),
         completed_at: record.completed_at.map(|dt| dt.to_rfc3339()),
+        asset_types: record.asset_types,
     }
 }
 
-/// Result of downloading a video, including the file path and optional thumbnail
+/// Result of downloading a video, including file path and extracted frames
 struct DownloadedVideo {
     file_path: String,
-    thumbnail: Option<String>,
+    first_frame_thumbnail: Option<String>,
+    last_frame_thumbnail: Option<String>,
+    first_frame_path: Option<String>,
+    last_frame_path: Option<String>,
 }
 
 async fn download_video(url: &str, output_dir: &str, organize_by_date: bool) -> Result<DownloadedVideo, String> {
@@ -415,58 +462,133 @@ async fn download_video(url: &str, output_dir: &str, organize_by_date: bool) -> 
 
     let file_path = path.to_string_lossy().to_string();
 
-    // Generate thumbnail from the video
-    let thumbnail = generate_video_thumbnail(&file_path).ok();
+    // Extract first and last frames from the video
+    let frames = extract_video_frames(&file_path).ok();
 
     Ok(DownloadedVideo {
         file_path,
-        thumbnail,
+        first_frame_thumbnail: frames.as_ref().and_then(|f| f.first_frame_thumbnail.clone()),
+        last_frame_thumbnail: frames.as_ref().and_then(|f| f.last_frame_thumbnail.clone()),
+        first_frame_path: frames.as_ref().and_then(|f| f.first_frame_path.clone()),
+        last_frame_path: frames.as_ref().and_then(|f| f.last_frame_path.clone()),
     })
 }
 
-/// Extract a frame from the video and create a base64 thumbnail
-fn generate_video_thumbnail(video_path: &str) -> Result<String, String> {
+/// Result of extracting frames from a video
+struct ExtractedFrames {
+    first_frame_thumbnail: Option<String>,
+    last_frame_thumbnail: Option<String>,
+    first_frame_path: Option<String>,
+    last_frame_path: Option<String>,
+}
+
+/// Extract first and last frames from the video, saving both full-res and thumbnails
+fn extract_video_frames(video_path: &str) -> Result<ExtractedFrames, String> {
+    use std::process::Command;
+    use std::path::Path;
+
+    let video_stem = Path::new(video_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("video");
+    let video_dir = Path::new(video_path)
+        .parent()
+        .ok_or("Cannot get video directory")?;
+
+    // Paths for full-resolution frames
+    let first_frame_path = video_dir.join(format!("{}_first.jpg", video_stem));
+    let last_frame_path = video_dir.join(format!("{}_last.jpg", video_stem));
+
+    // Extract first frame (at 0.1 seconds to avoid potential black frames)
+    let first_result = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-i", video_path,
+            "-ss", "0.1",
+            "-vframes", "1",
+            "-q:v", "2",
+            first_frame_path.to_str().unwrap(),
+        ])
+        .output();
+
+    let first_frame_ok = match first_result {
+        Ok(result) => result.status.success(),
+        Err(_) => false,
+    };
+
+    // Extract last frame (0.5 seconds from end using -sseof)
+    let last_result = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-sseof", "-0.5",
+            "-i", video_path,
+            "-vframes", "1",
+            "-q:v", "2",
+            last_frame_path.to_str().unwrap(),
+        ])
+        .output();
+
+    let last_frame_ok = match last_result {
+        Ok(result) => result.status.success(),
+        Err(_) => false,
+    };
+
+    // Generate thumbnails from the extracted frames
+    let first_frame_thumbnail = if first_frame_ok && first_frame_path.exists() {
+        generate_thumbnail_from_image(first_frame_path.to_str().unwrap()).ok()
+    } else {
+        None
+    };
+
+    let last_frame_thumbnail = if last_frame_ok && last_frame_path.exists() {
+        generate_thumbnail_from_image(last_frame_path.to_str().unwrap()).ok()
+    } else {
+        None
+    };
+
+    Ok(ExtractedFrames {
+        first_frame_thumbnail,
+        last_frame_thumbnail,
+        first_frame_path: if first_frame_ok { Some(first_frame_path.to_string_lossy().to_string()) } else { None },
+        last_frame_path: if last_frame_ok { Some(last_frame_path.to_string_lossy().to_string()) } else { None },
+    })
+}
+
+/// Generate a base64 thumbnail from an image file
+fn generate_thumbnail_from_image(image_path: &str) -> Result<String, String> {
     use std::process::Command;
     use base64::{engine::general_purpose::STANDARD, Engine};
 
-    // Create a temp file for the extracted frame
     let temp_dir = std::env::temp_dir();
-    let frame_path = temp_dir.join(format!("frame_{}.jpg", uuid::Uuid::new_v4()));
+    let thumb_path = temp_dir.join(format!("thumb_{}.jpg", uuid::Uuid::new_v4()));
 
-    // Use ffmpeg to extract a frame at 0.5 seconds (or first frame if video is shorter)
+    // Use ffmpeg to create a scaled thumbnail
     let output = Command::new("ffmpeg")
         .args([
-            "-y",                           // Overwrite output
-            "-i", video_path,               // Input video
-            "-ss", "0.5",                   // Seek to 0.5 seconds
-            "-vframes", "1",                // Extract 1 frame
-            "-vf", "scale=200:-1",          // Scale to 200px width, maintain aspect ratio
-            "-q:v", "2",                    // High quality JPEG
-            frame_path.to_str().unwrap(),
+            "-y",
+            "-i", image_path,
+            "-vf", "scale=200:-1",
+            "-q:v", "2",
+            thumb_path.to_str().unwrap(),
         ])
         .output();
 
     match output {
         Ok(result) => {
             if !result.status.success() {
-                // ffmpeg failed, clean up and return error
-                let _ = std::fs::remove_file(&frame_path);
-                return Err("ffmpeg failed to extract frame".to_string());
+                let _ = std::fs::remove_file(&thumb_path);
+                return Err("ffmpeg failed to create thumbnail".to_string());
             }
         }
         Err(_) => {
-            // ffmpeg not available, try with first-frame approach or return error
             return Err("ffmpeg not available".to_string());
         }
     }
 
-    // Read the extracted frame and convert to base64
-    let frame_data = std::fs::read(&frame_path).map_err(|e| e.to_string())?;
+    // Read and encode as base64
+    let thumb_data = std::fs::read(&thumb_path).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&thumb_path);
 
-    // Clean up temp file
-    let _ = std::fs::remove_file(&frame_path);
-
-    // Convert to base64 data URL
-    let encoded = STANDARD.encode(&frame_data);
+    let encoded = STANDARD.encode(&thumb_data);
     Ok(format!("data:image/jpeg;base64,{}", encoded))
 }

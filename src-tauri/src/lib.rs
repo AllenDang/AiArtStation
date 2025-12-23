@@ -20,7 +20,7 @@ use commands::{
     // Assets
     create_asset, get_assets, update_asset, delete_asset,
     // Videos
-    generate_video, poll_video_task, get_videos, get_video_detail, get_pending_videos, delete_video,
+    generate_video, poll_video_task, get_videos, get_video_detail, get_pending_videos, delete_video, add_video_tag, remove_video_tag,
     // State
     AppState, DbState,
 };
@@ -122,6 +122,8 @@ pub fn run() {
             get_video_detail,
             get_pending_videos,
             delete_video,
+            add_video_tag,
+            remove_video_tag,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

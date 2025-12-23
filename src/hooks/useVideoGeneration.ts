@@ -76,6 +76,7 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
       resolution: request.resolution,
       duration: request.duration,
       aspect_ratio: request.aspect_ratio,
+      asset_types: [],
     };
     setPendingVideos((prev) => [newVideo, ...prev]);
 
@@ -193,6 +194,22 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
     }
   }, []);
 
+  const addVideoTag = useCallback(async (id: string, assetType: string) => {
+    try {
+      await invoke<boolean>("add_video_tag", { id, assetType });
+    } catch (e) {
+      throw new Error(`Failed to add video tag: ${e}`);
+    }
+  }, []);
+
+  const removeVideoTag = useCallback(async (id: string, assetType: string) => {
+    try {
+      await invoke<boolean>("remove_video_tag", { id, assetType });
+    } catch (e) {
+      throw new Error(`Failed to remove video tag: ${e}`);
+    }
+  }, []);
+
   // Start polling for pending videos
   const startPolling = useCallback(() => {
     if (pollingRef.current) return;
@@ -246,6 +263,8 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
     getVideos,
     getVideoDetail,
     deleteVideo,
+    addVideoTag,
+    removeVideoTag,
     startPolling,
     stopPolling,
   };

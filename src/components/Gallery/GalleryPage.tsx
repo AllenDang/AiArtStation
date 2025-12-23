@@ -64,6 +64,7 @@ interface GalleryPageProps {
   onRefreshComplete?: () => void;
   selectedAssetType?: AssetType | null;
   onRemoveTag?: (imageId: string, assetType: AssetType) => void;
+  onRemoveVideoTag?: (videoId: string, assetType: AssetType) => void;
   pendingVideos?: VideoType[];
   onDeleteVideo?: (id: string) => void;
 }
@@ -78,6 +79,7 @@ export function GalleryPage({
   onRefreshComplete,
   selectedAssetType = null,
   onRemoveTag,
+  onRemoveVideoTag,
   pendingVideos = [],
   onDeleteVideo,
 }: GalleryPageProps) {
@@ -434,6 +436,7 @@ export function GalleryPage({
                     video={video}
                     onClick={setSelectedVideo}
                     onDismiss={handleDeleteVideo}
+                    onRemoveTag={onRemoveVideoTag}
                   />
                 ))}
                 {/* Completed videos */}
@@ -443,6 +446,7 @@ export function GalleryPage({
                     video={video}
                     onClick={setSelectedVideo}
                     onDismiss={handleDeleteVideo}
+                    onRemoveTag={onRemoveVideoTag}
                   />
                 ))}
               </div>
@@ -494,6 +498,7 @@ export function GalleryPage({
                   video={video}
                   onClick={setSelectedVideo}
                   onDismiss={handleDeleteVideo}
+                  onRemoveTag={onRemoveVideoTag}
                 />
               ))}
               {/* Completed videos (in "all" mode) */}
@@ -503,6 +508,7 @@ export function GalleryPage({
                   video={video}
                   onClick={setSelectedVideo}
                   onDismiss={handleDeleteVideo}
+                  onRemoveTag={onRemoveVideoTag}
                 />
               ))}
               {/* Completed images and bundles */}

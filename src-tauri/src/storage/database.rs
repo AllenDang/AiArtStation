@@ -55,7 +55,10 @@ pub struct VideoRecord {
     pub project_id: Option<String>,
     pub task_id: String,           // API task ID for polling
     pub file_path: Option<String>, // Local path after download
-    pub thumbnail: Option<String>, // Base64 thumbnail
+    pub first_frame_thumbnail: Option<String>, // Base64 thumbnail of first frame
+    pub last_frame_thumbnail: Option<String>,  // Base64 thumbnail of last frame
+    pub first_frame_path: Option<String>,      // Full-res first frame image path
+    pub last_frame_path: Option<String>,       // Full-res last frame image path
     pub prompt: String,
     pub model: String,
     pub generation_type: String, // "text-to-video", "image-to-video-first", "image-to-video-both"
@@ -69,13 +72,17 @@ pub struct VideoRecord {
     pub tokens_used: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+    pub asset_types: Vec<String>, // ["character", "background", "style", "prop"] - for filtering
 }
 
 #[derive(Debug, Default)]
 pub struct VideoStatusUpdate<'a> {
     pub status: &'a str,
     pub file_path: Option<&'a str>,
-    pub thumbnail: Option<&'a str>,
+    pub first_frame_thumbnail: Option<&'a str>,
+    pub last_frame_thumbnail: Option<&'a str>,
+    pub first_frame_path: Option<&'a str>,
+    pub last_frame_path: Option<&'a str>,
     pub resolution: Option<&'a str>,
     pub duration: Option<f64>,
     pub fps: Option<i32>,
@@ -266,18 +273,62 @@ impl Database {
             ).context("Failed to migrate asset_type to asset_types")?;
         }
 
-        // Migration: Add thumbnail column to videos table
+        // Migration: Video frame columns
         let video_columns: Vec<String> = self.conn
             .prepare("PRAGMA table_info(videos)")?
             .query_map([], |row| row.get::<_, String>(1))?
             .filter_map(|r| r.ok())
             .collect();
 
-        if !video_columns.contains(&"thumbnail".to_string()) {
+        // Migration: Rename thumbnail to first_frame_thumbnail (SQLite doesn't support RENAME COLUMN in older versions)
+        // So we add new column and copy data if old column exists
+        if video_columns.contains(&"thumbnail".to_string()) && !video_columns.contains(&"first_frame_thumbnail".to_string()) {
             self.conn.execute(
-                "ALTER TABLE videos ADD COLUMN thumbnail TEXT",
+                "ALTER TABLE videos ADD COLUMN first_frame_thumbnail TEXT",
                 [],
-            ).context("Failed to add thumbnail to videos table")?;
+            ).context("Failed to add first_frame_thumbnail to videos table")?;
+            // Copy existing thumbnail data to first_frame_thumbnail
+            self.conn.execute(
+                "UPDATE videos SET first_frame_thumbnail = thumbnail WHERE thumbnail IS NOT NULL",
+                [],
+            ).context("Failed to migrate thumbnail to first_frame_thumbnail")?;
+        } else if !video_columns.contains(&"first_frame_thumbnail".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE videos ADD COLUMN first_frame_thumbnail TEXT",
+                [],
+            ).context("Failed to add first_frame_thumbnail to videos table")?;
+        }
+
+        // Migration: Add last_frame_thumbnail column
+        if !video_columns.contains(&"last_frame_thumbnail".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE videos ADD COLUMN last_frame_thumbnail TEXT",
+                [],
+            ).context("Failed to add last_frame_thumbnail to videos table")?;
+        }
+
+        // Migration: Add first_frame_path column
+        if !video_columns.contains(&"first_frame_path".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE videos ADD COLUMN first_frame_path TEXT",
+                [],
+            ).context("Failed to add first_frame_path to videos table")?;
+        }
+
+        // Migration: Add last_frame_path column
+        if !video_columns.contains(&"last_frame_path".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE videos ADD COLUMN last_frame_path TEXT",
+                [],
+            ).context("Failed to add last_frame_path to videos table")?;
+        }
+
+        // Migration: Add asset_types column to videos (JSON array for tags)
+        if !video_columns.contains(&"asset_types".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE videos ADD COLUMN asset_types TEXT NOT NULL DEFAULT '[]'",
+                [],
+            ).context("Failed to add asset_types to videos table")?;
         }
 
         Ok(())
@@ -625,21 +676,81 @@ impl Database {
         }
     }
 
-    /// Get counts of images by asset_type for a project
+    /// Add an asset type tag to a video
+    pub fn add_video_asset_type(&self, id: &str, asset_type: &str) -> Result<bool> {
+        // Get current asset_types
+        let current: String = self.conn.query_row(
+            "SELECT asset_types FROM videos WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        ).unwrap_or_else(|_| "[]".to_string());
+
+        let mut types: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
+
+        // Only add if not already present
+        if !types.contains(&asset_type.to_string()) {
+            types.push(asset_type.to_string());
+            let new_json = serde_json::to_string(&types)?;
+            let rows = self.conn.execute(
+                "UPDATE videos SET asset_types = ?1 WHERE id = ?2",
+                params![new_json, id],
+            )?;
+            Ok(rows > 0)
+        } else {
+            Ok(false) // Already tagged
+        }
+    }
+
+    /// Remove an asset type tag from a video
+    pub fn remove_video_asset_type(&self, id: &str, asset_type: &str) -> Result<bool> {
+        // Get current asset_types
+        let current: String = self.conn.query_row(
+            "SELECT asset_types FROM videos WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        ).unwrap_or_else(|_| "[]".to_string());
+
+        let mut types: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
+
+        // Remove if present
+        let original_len = types.len();
+        types.retain(|t| t != asset_type);
+
+        if types.len() != original_len {
+            let new_json = serde_json::to_string(&types)?;
+            let rows = self.conn.execute(
+                "UPDATE videos SET asset_types = ?1 WHERE id = ?2",
+                params![new_json, id],
+            )?;
+            Ok(rows > 0)
+        } else {
+            Ok(false) // Wasn't tagged
+        }
+    }
+
+    /// Get counts of images and videos by asset_type for a project
     pub fn get_asset_type_counts(&self, project_id: &str) -> Result<Vec<(String, i64)>> {
-        // Count images that contain each asset type in their JSON array
+        // Count images and videos that contain each asset type in their JSON array
         let asset_types = ["character", "background", "style", "prop"];
         let mut counts = Vec::new();
 
         for asset_type in asset_types {
             let pattern = format!("%\"{}\"%" , asset_type);
-            let count: i64 = self.conn.query_row(
+            // Count images
+            let image_count: i64 = self.conn.query_row(
                 "SELECT COUNT(*) FROM images WHERE project_id = ?1 AND asset_types LIKE ?2",
                 params![project_id, pattern],
                 |row| row.get(0),
             )?;
-            if count > 0 {
-                counts.push((asset_type.to_string(), count));
+            // Count videos
+            let video_count: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM videos WHERE project_id = ?1 AND asset_types LIKE ?2",
+                params![project_id, pattern],
+                |row| row.get(0),
+            )?;
+            let total = image_count + video_count;
+            if total > 0 {
+                counts.push((asset_type.to_string(), total));
             }
         }
 
@@ -690,15 +801,19 @@ impl Database {
     // ========================================================================
 
     pub fn insert_video(&self, record: &VideoRecord) -> Result<()> {
+        let asset_types_json = serde_json::to_string(&record.asset_types)?;
         self.conn.execute(
-            "INSERT INTO videos (id, project_id, task_id, file_path, thumbnail, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            "INSERT INTO videos (id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 record.id,
                 record.project_id,
                 record.task_id,
                 record.file_path,
-                record.thumbnail,
+                record.first_frame_thumbnail,
+                record.last_frame_thumbnail,
+                record.first_frame_path,
+                record.last_frame_path,
                 record.prompt,
                 record.model,
                 record.generation_type,
@@ -712,6 +827,7 @@ impl Database {
                 record.tokens_used,
                 record.created_at.to_rfc3339(),
                 record.completed_at.map(|dt| dt.to_rfc3339()),
+                asset_types_json,
             ],
         ).context("Failed to insert video")?;
         Ok(())
@@ -719,7 +835,7 @@ impl Database {
 
     pub fn get_videos_by_project(&self, project_id: &str, limit: i64, offset: i64) -> Result<Vec<VideoRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, thumbnail, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at
+            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
              FROM videos
              WHERE project_id = ?1
              ORDER BY created_at DESC
@@ -732,7 +848,7 @@ impl Database {
 
     pub fn get_video_by_id(&self, id: &str) -> Result<Option<VideoRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, thumbnail, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at
+            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
              FROM videos WHERE id = ?1"
         )?;
 
@@ -746,7 +862,7 @@ impl Database {
 
     pub fn get_pending_videos(&self) -> Result<Vec<VideoRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, thumbnail, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at
+            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
              FROM videos
              WHERE status IN ('pending', 'processing')
              ORDER BY created_at ASC"
@@ -764,8 +880,8 @@ impl Database {
         };
 
         let rows = self.conn.execute(
-            "UPDATE videos SET status = ?1, file_path = COALESCE(?2, file_path), thumbnail = COALESCE(?3, thumbnail), resolution = COALESCE(?4, resolution), duration = COALESCE(?5, duration), fps = COALESCE(?6, fps), tokens_used = COALESCE(?7, tokens_used), error_message = ?8, completed_at = COALESCE(?9, completed_at) WHERE id = ?10",
-            params![update.status, update.file_path, update.thumbnail, update.resolution, update.duration, update.fps, update.tokens_used, update.error_message, completed_at, id],
+            "UPDATE videos SET status = ?1, file_path = COALESCE(?2, file_path), first_frame_thumbnail = COALESCE(?3, first_frame_thumbnail), last_frame_thumbnail = COALESCE(?4, last_frame_thumbnail), first_frame_path = COALESCE(?5, first_frame_path), last_frame_path = COALESCE(?6, last_frame_path), resolution = COALESCE(?7, resolution), duration = COALESCE(?8, duration), fps = COALESCE(?9, fps), tokens_used = COALESCE(?10, tokens_used), error_message = ?11, completed_at = COALESCE(?12, completed_at) WHERE id = ?13",
+            params![update.status, update.file_path, update.first_frame_thumbnail, update.last_frame_thumbnail, update.first_frame_path, update.last_frame_path, update.resolution, update.duration, update.fps, update.tokens_used, update.error_message, completed_at, id],
         )?;
         Ok(rows > 0)
     }
@@ -788,25 +904,29 @@ impl Database {
     }
 
     fn map_video_row(row: &rusqlite::Row) -> rusqlite::Result<VideoRecord> {
-        let created_at_str: String = row.get(16)?;
-        let completed_at_str: Option<String> = row.get(17)?;
+        let created_at_str: String = row.get(19)?;
+        let completed_at_str: Option<String> = row.get(20)?;
+        let asset_types_json: String = row.get::<_, Option<String>>(21)?.unwrap_or_else(|| "[]".to_string());
         Ok(VideoRecord {
             id: row.get(0)?,
             project_id: row.get(1)?,
             task_id: row.get(2)?,
             file_path: row.get(3)?,
-            thumbnail: row.get(4)?,
-            prompt: row.get(5)?,
-            model: row.get(6)?,
-            generation_type: row.get(7)?,
-            source_image_id: row.get(8)?,
-            resolution: row.get(9)?,
-            duration: row.get(10)?,
-            fps: row.get(11)?,
-            aspect_ratio: row.get(12)?,
-            status: row.get(13)?,
-            error_message: row.get(14)?,
-            tokens_used: row.get(15)?,
+            first_frame_thumbnail: row.get(4)?,
+            last_frame_thumbnail: row.get(5)?,
+            first_frame_path: row.get(6)?,
+            last_frame_path: row.get(7)?,
+            prompt: row.get(8)?,
+            model: row.get(9)?,
+            generation_type: row.get(10)?,
+            source_image_id: row.get(11)?,
+            resolution: row.get(12)?,
+            duration: row.get(13)?,
+            fps: row.get(14)?,
+            aspect_ratio: row.get(15)?,
+            status: row.get(16)?,
+            error_message: row.get(17)?,
+            tokens_used: row.get(18)?,
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -815,6 +935,7 @@ impl Database {
                     .map(|dt| dt.with_timezone(&Utc))
                     .ok()
             }),
+            asset_types: serde_json::from_str(&asset_types_json).unwrap_or_default(),
         })
     }
 
@@ -841,15 +962,28 @@ impl Database {
         }
 
         // Cleanup videos (only completed ones with file_path)
-        let mut stmt = self.conn.prepare("SELECT id, file_path FROM videos WHERE file_path IS NOT NULL")?;
-        let video_rows: Vec<(String, String)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        // Also fetch frame paths so we can delete them
+        let mut stmt = self.conn.prepare(
+            "SELECT id, file_path, first_frame_path, last_frame_path FROM videos WHERE file_path IS NOT NULL"
+        )?;
+        let video_rows: Vec<(String, String, Option<String>, Option<String>)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
             .filter_map(|r| r.ok())
             .collect();
 
-        for (id, file_path) in video_rows {
-            if !std::path::Path::new(&file_path).exists() && self.delete_video(&id)? {
-                videos_removed += 1;
+        for (id, file_path, first_frame_path, last_frame_path) in video_rows {
+            if !std::path::Path::new(&file_path).exists() {
+                // Delete frame files if they exist
+                if let Some(first_path) = first_frame_path {
+                    let _ = std::fs::remove_file(&first_path);
+                }
+                if let Some(last_path) = last_frame_path {
+                    let _ = std::fs::remove_file(&last_path);
+                }
+                // Delete database record
+                if self.delete_video(&id)? {
+                    videos_removed += 1;
+                }
             }
         }
 

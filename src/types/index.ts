@@ -56,7 +56,10 @@ export interface Video {
   project_id?: string;
   task_id: string;
   file_path?: string;
-  thumbnail?: string;
+  first_frame_thumbnail?: string;  // Base64 thumbnail for preview
+  last_frame_thumbnail?: string;   // Base64 thumbnail for preview
+  first_frame_path?: string;       // Full-res frame file path
+  last_frame_path?: string;        // Full-res frame file path
   prompt: string;
   model: string;
   generation_type: VideoGenerationType;
@@ -70,7 +73,28 @@ export interface Video {
   tokens_used?: number;
   created_at: string;
   completed_at?: string;
+  asset_types: AssetType[];  // Tags for categorization
 }
+
+// Video drag data for dropping videos to reference zones
+export interface VideoDragData {
+  type: "ai-artstation-video";
+  video_id: string;
+  first_frame_path?: string;
+  last_frame_path?: string;
+  first_frame_thumbnail?: string;  // For preview
+  last_frame_thumbnail?: string;
+  prompt: string;
+}
+
+// Drop zone type for different reference image contexts
+export type DropZoneType =
+  | "image-ref"        // Image generation reference zone (add both frames as refs)
+  | "video-first"      // Video first-frame zone (show menu to pick first or last)
+  | "video-last"       // Video last-frame zone (show menu to pick first or last)
+  | "video-both-first" // Video first-last mode: first frame zone
+  | "video-both-last"  // Video first-last mode: last frame zone
+  | "video-ref";       // Video reference images zone (add both as refs)
 
 export interface GenerateVideoRequest {
   project_id: string;

@@ -95,7 +95,7 @@ function App() {
   } = useGenerationTasks({ onTaskComplete: handleTaskComplete });
 
   // Video generation
-  const { generateVideo, pendingVideos, deleteVideo } = useVideoGeneration({
+  const { generateVideo, pendingVideos, deleteVideo, addVideoTag, removeVideoTag } = useVideoGeneration({
     onTaskComplete: handleTaskComplete,
   });
 
@@ -141,6 +141,18 @@ function App() {
     }
   }, [addImageTag]);
 
+  // Handle dropping a video onto a category to tag it
+  const handleDropVideoToCategory = useCallback(async (videoId: string, assetType: AssetType) => {
+    try {
+      await addVideoTag(videoId, assetType);
+      toast.success(`视频已标记为${({ character: "角色", background: "背景", style: "风格", prop: "道具" }[assetType])}`);
+      // Refresh gallery and counts
+      setHistoryRefreshKey((prev) => prev + 1);
+    } catch (e) {
+      toast.error(`标记失败: ${e}`);
+    }
+  }, [addVideoTag]);
+
   // Handle removing a tag from an image
   const handleRemoveImageTag = useCallback(async (imageId: string, assetType: AssetType) => {
     try {
@@ -152,6 +164,18 @@ function App() {
       toast.error(`移除标签失败: ${e}`);
     }
   }, [removeImageTag]);
+
+  // Handle removing a tag from a video
+  const handleRemoveVideoTag = useCallback(async (videoId: string, assetType: AssetType) => {
+    try {
+      await removeVideoTag(videoId, assetType);
+      toast.success(`标签已移除`);
+      // Refresh gallery and counts
+      setHistoryRefreshKey((prev) => prev + 1);
+    } catch (e) {
+      toast.error(`移除标签失败: ${e}`);
+    }
+  }, [removeVideoTag]);
 
   // If no projects exist or loading, show welcome screen
   if (!projectsLoading && projects.length === 0) {
@@ -224,6 +248,7 @@ function App() {
           onViewModeChange={handleViewModeChange}
           onAssetTypeSelect={handleAssetTypeSelect}
           onDropImageToCategory={handleDropImageToCategory}
+          onDropVideoToCategory={handleDropVideoToCategory}
         />
 
         {/* Main Workspace */}
@@ -246,6 +271,7 @@ function App() {
               onRefreshComplete={handleRefreshComplete}
               selectedAssetType={selectedAssetType}
               onRemoveTag={handleRemoveImageTag}
+              onRemoveVideoTag={handleRemoveVideoTag}
               pendingVideos={pendingVideos}
               onDeleteVideo={handleDeleteVideo}
             />

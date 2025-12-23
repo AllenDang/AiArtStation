@@ -158,7 +158,6 @@ export function OptionsPanel({ projectId, onStartImageTask, onStartVideoTask }: 
       };
 
       onStartImageTask(request); // No await - returns immediately, task appears instantly
-      toast.info("开始生成图片");
     } else {
       // Video generation
       if (!config?.api_token_set || !config?.base_url || !config?.video_model) {
@@ -202,7 +201,6 @@ export function OptionsPanel({ projectId, onStartImageTask, onStartVideoTask }: 
       };
 
       onStartVideoTask(request); // No await - returns immediately, task appears instantly
-      toast.info("开始生成视频");
     }
   };
 
@@ -303,6 +301,7 @@ export function OptionsPanel({ projectId, onStartImageTask, onStartVideoTask }: 
                       onImagesChange={setReferenceImages}
                       onReadImage={handleReadImage}
                       maxImages={14}
+                      dropZoneType="image-ref"
                     />
                   </div>
                 </div>
@@ -420,6 +419,7 @@ export function OptionsPanel({ projectId, onStartImageTask, onStartVideoTask }: 
                             maxImages={1}
                             label="首帧图片"
                             singleImageFill
+                            dropZoneType="video-first"
                           />
                         </div>
                       )}
@@ -433,6 +433,13 @@ export function OptionsPanel({ projectId, onStartImageTask, onStartVideoTask }: 
                               maxImages={1}
                               label="首帧"
                               singleImageFill
+                              dropZoneType="video-both-first"
+                              onVideoFrameDrop={(_first, last) => {
+                                // When video is dropped on first frame zone, also fill last frame
+                                if (last) {
+                                  setVideoLastFrame(last);
+                                }
+                              }}
                             />
                           </div>
                           <div className="flex-1 h-full">
@@ -443,6 +450,7 @@ export function OptionsPanel({ projectId, onStartImageTask, onStartVideoTask }: 
                               maxImages={1}
                               label="尾帧"
                               singleImageFill
+                              dropZoneType="video-both-last"
                             />
                           </div>
                         </div>
@@ -454,6 +462,7 @@ export function OptionsPanel({ projectId, onStartImageTask, onStartVideoTask }: 
                           onReadImage={handleReadImage}
                           maxImages={4}
                           label={`参考图片 (${videoRefImages.length}/4)`}
+                          dropZoneType="video-ref"
                         />
                       )}
                     </div>
