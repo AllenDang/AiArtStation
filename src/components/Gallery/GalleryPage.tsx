@@ -54,6 +54,14 @@ const assetTypeIcons: Record<AssetType, React.ElementType> = {
   prop: Package,
 };
 
+// Asset type labels in Chinese
+const assetTypeLabels: Record<AssetType, string> = {
+  character: "角色",
+  background: "背景",
+  style: "风格",
+  prop: "道具",
+};
+
 interface GalleryPageProps {
   projectId: string;
   filter?: "images" | "videos" | "all";
@@ -563,7 +571,7 @@ export function GalleryPage({
                                 )}
                               >
                                 <Icon className="w-2.5 h-2.5" />
-                                <span className="capitalize">{assetType}</span>
+                                <span>{assetTypeLabels[assetType as AssetType] || assetType}</span>
                                 {onRemoveTag && (
                                   <button
                                     className="ml-0.5 opacity-0 group-hover/tag:opacity-100 hover:text-red-400 transition-opacity"

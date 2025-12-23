@@ -219,8 +219,13 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
       // Get current pending videos from state (via ref to avoid stale closure)
       const currentPending = pendingVideosRef.current;
       for (const video of currentPending) {
-        if (video.status === "pending" || video.status === "processing") {
-          await pollVideoTask(video.id);
+        // Only poll videos that have a real task_id (not temp videos still being submitted)
+        if ((video.status === "pending" || video.status === "processing") && video.task_id) {
+          try {
+            await pollVideoTask(video.id);
+          } catch (e) {
+            console.warn(`Failed to poll video ${video.id}:`, e);
+          }
         }
       }
     };

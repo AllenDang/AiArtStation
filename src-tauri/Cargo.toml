@@ -27,30 +27,35 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = [
+  "json",
+  "rustls-tls",
+], default-features = false }
 
 # Image processing
 image = { version = "0.25", features = ["jpeg", "png", "webp", "gif"] }
 base64 = "0.22"
 
+# Video processing
+ffmpeg-next = "8"
+
 # Encryption
 aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", features = ["simple"] }
 sha2 = "0.10"
-rand = "0.8"
+rand = "0.9"
 
 # Database
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-dirs = "5"
+dirs = "6"
 thiserror = "2"
 anyhow = "1"
 hostname = "0.4"
-opener = "0.7"
+opener = "0.8"
 
 [dev-dependencies]
 tempfile = "3.23.0"
-

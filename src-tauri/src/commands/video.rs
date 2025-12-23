@@ -482,9 +482,8 @@ struct ExtractedFrames {
     last_frame_path: Option<String>,
 }
 
-/// Extract first and last frames from the video, saving both full-res and thumbnails
+/// Extract first and last frames from the video using ffmpeg-next
 fn extract_video_frames(video_path: &str) -> Result<ExtractedFrames, String> {
-    use std::process::Command;
     use std::path::Path;
 
     let video_stem = Path::new(video_path)
@@ -499,39 +498,11 @@ fn extract_video_frames(video_path: &str) -> Result<ExtractedFrames, String> {
     let first_frame_path = video_dir.join(format!("{}_first.jpg", video_stem));
     let last_frame_path = video_dir.join(format!("{}_last.jpg", video_stem));
 
-    // Extract first frame (at 0.1 seconds to avoid potential black frames)
-    let first_result = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-i", video_path,
-            "-ss", "0.1",
-            "-vframes", "1",
-            "-q:v", "2",
-            first_frame_path.to_str().unwrap(),
-        ])
-        .output();
+    // Extract first frame (near the beginning)
+    let first_frame_ok = extract_frame_at_position(video_path, first_frame_path.to_str().unwrap(), FramePosition::Start).is_ok();
 
-    let first_frame_ok = match first_result {
-        Ok(result) => result.status.success(),
-        Err(_) => false,
-    };
-
-    // Extract last frame (0.5 seconds from end using -sseof)
-    let last_result = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-sseof", "-0.5",
-            "-i", video_path,
-            "-vframes", "1",
-            "-q:v", "2",
-            last_frame_path.to_str().unwrap(),
-        ])
-        .output();
-
-    let last_frame_ok = match last_result {
-        Ok(result) => result.status.success(),
-        Err(_) => false,
-    };
+    // Extract last frame (near the end)
+    let last_frame_ok = extract_frame_at_position(video_path, last_frame_path.to_str().unwrap(), FramePosition::End).is_ok();
 
     // Generate thumbnails from the extracted frames
     let first_frame_thumbnail = if first_frame_ok && first_frame_path.exists() {
@@ -554,41 +525,175 @@ fn extract_video_frames(video_path: &str) -> Result<ExtractedFrames, String> {
     })
 }
 
-/// Generate a base64 thumbnail from an image file
-fn generate_thumbnail_from_image(image_path: &str) -> Result<String, String> {
-    use std::process::Command;
-    use base64::{engine::general_purpose::STANDARD, Engine};
+enum FramePosition {
+    Start,
+    End,
+}
 
-    let temp_dir = std::env::temp_dir();
-    let thumb_path = temp_dir.join(format!("thumb_{}.jpg", uuid::Uuid::new_v4()));
+/// Extract a single frame from video at specified position using ffmpeg-next
+fn extract_frame_at_position(video_path: &str, output_path: &str, position: FramePosition) -> Result<(), String> {
+    use ffmpeg_next as ffmpeg;
 
-    // Use ffmpeg to create a scaled thumbnail
-    let output = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-i", image_path,
-            "-vf", "scale=200:-1",
-            "-q:v", "2",
-            thumb_path.to_str().unwrap(),
-        ])
-        .output();
+    ffmpeg::init().map_err(|e| format!("Failed to init ffmpeg: {}", e))?;
 
-    match output {
-        Ok(result) => {
-            if !result.status.success() {
-                let _ = std::fs::remove_file(&thumb_path);
-                return Err("ffmpeg failed to create thumbnail".to_string());
-            }
+    let mut ictx = ffmpeg::format::input(&video_path)
+        .map_err(|e| format!("Failed to open video: {}", e))?;
+
+    let video_stream_index = ictx
+        .streams()
+        .best(ffmpeg::media::Type::Video)
+        .ok_or("No video stream found")?
+        .index();
+
+    let stream = ictx.stream(video_stream_index).ok_or("Failed to get stream")?;
+    let time_base = stream.time_base();
+    let duration = stream.duration();
+
+    let codec_params = stream.parameters();
+    let decoder_ctx = ffmpeg::codec::context::Context::from_parameters(codec_params)
+        .map_err(|e| format!("Failed to create codec context: {}", e))?;
+    let mut decoder = decoder_ctx.decoder().video()
+        .map_err(|e| format!("Failed to create video decoder: {}", e))?;
+
+    // Calculate duration in seconds
+    let duration_secs = if duration > 0 && time_base.numerator() > 0 {
+        duration as f64 * time_base.numerator() as f64 / time_base.denominator() as f64
+    } else {
+        0.0
+    };
+
+    // For END position: seek to ~1 second before end, then decode to EOF to get actual last frame
+    // For START position: seek to beginning
+    const AV_TIME_BASE: i64 = 1_000_000;
+
+    let (seek_ts, decode_to_eof) = match position {
+        FramePosition::Start => {
+            // Seek to beginning (0.1s to skip potential black frames)
+            let ts = (0.1 * AV_TIME_BASE as f64) as i64;
+            (ts, false)
         }
-        Err(_) => {
-            return Err("ffmpeg not available".to_string());
+        FramePosition::End => {
+            // Seek to ~1 second before end, then decode to EOF
+            let seek_secs = (duration_secs - 1.0).max(0.0);
+            let ts = (seek_secs * AV_TIME_BASE as f64) as i64;
+            (ts, true)
+        }
+    };
+
+    // Seek using FFI directly with AVSEEK_FLAG_BACKWARD
+    let seek_result = unsafe {
+        ffmpeg::ffi::avformat_seek_file(
+            ictx.as_mut_ptr(),
+            -1,
+            i64::MIN,
+            seek_ts,
+            seek_ts,
+            ffmpeg::ffi::AVSEEK_FLAG_BACKWARD,
+        )
+    };
+    if seek_result < 0 {
+        return Err(format!("Failed to seek: error code {}", seek_result));
+    }
+
+    let mut scaler: Option<ffmpeg::software::scaling::Context> = None;
+    let mut last_good_frame: Option<(u32, u32, Vec<u8>)> = None;
+
+    // Process packets
+    for (stream, packet) in ictx.packets() {
+        if stream.index() != video_stream_index {
+            continue;
+        }
+
+        decoder.send_packet(&packet)
+            .map_err(|e| format!("Failed to send packet: {}", e))?;
+
+        let mut decoded_frame = ffmpeg::frame::Video::empty();
+        while decoder.receive_frame(&mut decoded_frame).is_ok() {
+            // Initialize scaler if needed
+            if scaler.is_none() {
+                scaler = Some(
+                    ffmpeg::software::scaling::Context::get(
+                        decoded_frame.format(),
+                        decoded_frame.width(),
+                        decoded_frame.height(),
+                        ffmpeg::format::Pixel::RGB24,
+                        decoded_frame.width(),
+                        decoded_frame.height(),
+                        ffmpeg::software::scaling::Flags::BILINEAR,
+                    ).map_err(|e| format!("Failed to create scaler: {}", e))?
+                );
+            }
+
+            // Convert to RGB
+            let mut rgb_frame = ffmpeg::frame::Video::empty();
+            scaler.as_mut().unwrap().run(&decoded_frame, &mut rgb_frame)
+                .map_err(|e| format!("Failed to scale frame: {}", e))?;
+
+            let width = rgb_frame.width();
+            let height = rgb_frame.height();
+            let data = rgb_frame.data(0).to_vec();
+
+            // Keep this frame
+            last_good_frame = Some((width, height, data));
+
+            if !decode_to_eof {
+                // For START: take first frame and exit immediately
+                break;
+            }
+            // For END: continue decoding to get the actual last frame
+        }
+
+        if !decode_to_eof && last_good_frame.is_some() {
+            break;
         }
     }
 
-    // Read and encode as base64
-    let thumb_data = std::fs::read(&thumb_path).map_err(|e| e.to_string())?;
-    let _ = std::fs::remove_file(&thumb_path);
+    // Flush decoder to get any remaining buffered frames
+    if decode_to_eof {
+        decoder.send_eof().ok();
+        let mut decoded_frame = ffmpeg::frame::Video::empty();
+        while decoder.receive_frame(&mut decoded_frame).is_ok() {
+            if let Some(ref mut s) = scaler {
+                let mut rgb_frame = ffmpeg::frame::Video::empty();
+                if s.run(&decoded_frame, &mut rgb_frame).is_ok() {
+                    last_good_frame = Some((rgb_frame.width(), rgb_frame.height(), rgb_frame.data(0).to_vec()));
+                }
+            }
+        }
+    }
 
-    let encoded = STANDARD.encode(&thumb_data);
+    // Save the last good frame
+    if let Some((width, height, data)) = last_good_frame {
+        let img = image::RgbImage::from_raw(width, height, data)
+            .ok_or("Failed to create image from frame data")?;
+        img.save(output_path)
+            .map_err(|e| format!("Failed to save frame: {}", e))?;
+        Ok(())
+    } else {
+        Err("No frame decoded".to_string())
+    }
+}
+
+/// Generate a base64 thumbnail from an image file using image crate
+fn generate_thumbnail_from_image(image_path: &str) -> Result<String, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use image::GenericImageView;
+
+    let img = image::open(image_path)
+        .map_err(|e| format!("Failed to open image: {}", e))?;
+
+    // Calculate thumbnail size (max width 200, maintain aspect ratio)
+    let (width, height) = img.dimensions();
+    let thumb_width = 200u32;
+    let thumb_height = (height as f32 * thumb_width as f32 / width as f32) as u32;
+
+    let thumbnail = img.thumbnail(thumb_width, thumb_height);
+
+    // Encode as JPEG to bytes
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    thumbnail.write_to(&mut buffer, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("Failed to encode thumbnail: {}", e))?;
+
+    let encoded = STANDARD.encode(buffer.into_inner());
     Ok(format!("data:image/jpeg;base64,{}", encoded))
 }

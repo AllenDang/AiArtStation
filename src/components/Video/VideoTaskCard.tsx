@@ -14,6 +14,14 @@ const assetTypeIcons: Record<AssetType, React.ElementType> = {
   prop: Package,
 };
 
+// Asset type labels in Chinese
+const assetTypeLabels: Record<AssetType, string> = {
+  character: "角色",
+  background: "背景",
+  style: "风格",
+  prop: "道具",
+};
+
 interface VideoTaskCardProps {
   video: Video;
   onRetry?: (id: string) => void;
@@ -66,7 +74,9 @@ export function VideoTaskCard({ video, onRetry, onDismiss, onClick, onRemoveTag 
       prompt: video.prompt,
     };
 
-    e.dataTransfer.setData("application/json", JSON.stringify(dragData));
+    const jsonStr = JSON.stringify(dragData);
+    e.dataTransfer.setData("application/json", jsonStr);
+    e.dataTransfer.setData("text/plain", jsonStr);
     e.dataTransfer.effectAllowed = "copy";
     setIsDragging(true);
   }, [hasDragData, video]);
@@ -224,7 +234,7 @@ export function VideoTaskCard({ video, onRetry, onDismiss, onClick, onRemoveTag 
                     )}
                   >
                     <Icon className="w-2.5 h-2.5" />
-                    <span className="capitalize">{assetType}</span>
+                    <span>{assetTypeLabels[assetType as AssetType] || assetType}</span>
                     {onRemoveTag && (
                       <button
                         className="ml-0.5 opacity-0 group-hover/tag:opacity-100 hover:text-red-400 transition-opacity"
