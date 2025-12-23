@@ -55,6 +55,7 @@ pub struct VideoRecord {
     pub project_id: Option<String>,
     pub task_id: String,           // API task ID for polling
     pub file_path: Option<String>, // Local path after download
+    pub thumbnail: Option<String>, // Base64 thumbnail
     pub prompt: String,
     pub model: String,
     pub generation_type: String, // "text-to-video", "image-to-video-first", "image-to-video-both"
@@ -74,6 +75,7 @@ pub struct VideoRecord {
 pub struct VideoStatusUpdate<'a> {
     pub status: &'a str,
     pub file_path: Option<&'a str>,
+    pub thumbnail: Option<&'a str>,
     pub resolution: Option<&'a str>,
     pub duration: Option<f64>,
     pub fps: Option<i32>,
@@ -262,6 +264,20 @@ impl Database {
                 "UPDATE images SET asset_types = json_array(asset_type) WHERE asset_type IS NOT NULL AND asset_type != ''",
                 [],
             ).context("Failed to migrate asset_type to asset_types")?;
+        }
+
+        // Migration: Add thumbnail column to videos table
+        let video_columns: Vec<String> = self.conn
+            .prepare("PRAGMA table_info(videos)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if !video_columns.contains(&"thumbnail".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE videos ADD COLUMN thumbnail TEXT",
+                [],
+            ).context("Failed to add thumbnail to videos table")?;
         }
 
         Ok(())
@@ -675,13 +691,14 @@ impl Database {
 
     pub fn insert_video(&self, record: &VideoRecord) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO videos (id, project_id, task_id, file_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            "INSERT INTO videos (id, project_id, task_id, file_path, thumbnail, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 record.id,
                 record.project_id,
                 record.task_id,
                 record.file_path,
+                record.thumbnail,
                 record.prompt,
                 record.model,
                 record.generation_type,
@@ -702,7 +719,7 @@ impl Database {
 
     pub fn get_videos_by_project(&self, project_id: &str, limit: i64, offset: i64) -> Result<Vec<VideoRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at
+            "SELECT id, project_id, task_id, file_path, thumbnail, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at
              FROM videos
              WHERE project_id = ?1
              ORDER BY created_at DESC
@@ -715,7 +732,7 @@ impl Database {
 
     pub fn get_video_by_id(&self, id: &str) -> Result<Option<VideoRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at
+            "SELECT id, project_id, task_id, file_path, thumbnail, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at
              FROM videos WHERE id = ?1"
         )?;
 
@@ -729,7 +746,7 @@ impl Database {
 
     pub fn get_pending_videos(&self) -> Result<Vec<VideoRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at
+            "SELECT id, project_id, task_id, file_path, thumbnail, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at
              FROM videos
              WHERE status IN ('pending', 'processing')
              ORDER BY created_at ASC"
@@ -747,8 +764,8 @@ impl Database {
         };
 
         let rows = self.conn.execute(
-            "UPDATE videos SET status = ?1, file_path = COALESCE(?2, file_path), resolution = COALESCE(?3, resolution), duration = COALESCE(?4, duration), fps = COALESCE(?5, fps), tokens_used = COALESCE(?6, tokens_used), error_message = ?7, completed_at = COALESCE(?8, completed_at) WHERE id = ?9",
-            params![update.status, update.file_path, update.resolution, update.duration, update.fps, update.tokens_used, update.error_message, completed_at, id],
+            "UPDATE videos SET status = ?1, file_path = COALESCE(?2, file_path), thumbnail = COALESCE(?3, thumbnail), resolution = COALESCE(?4, resolution), duration = COALESCE(?5, duration), fps = COALESCE(?6, fps), tokens_used = COALESCE(?7, tokens_used), error_message = ?8, completed_at = COALESCE(?9, completed_at) WHERE id = ?10",
+            params![update.status, update.file_path, update.thumbnail, update.resolution, update.duration, update.fps, update.tokens_used, update.error_message, completed_at, id],
         )?;
         Ok(rows > 0)
     }
@@ -771,24 +788,25 @@ impl Database {
     }
 
     fn map_video_row(row: &rusqlite::Row) -> rusqlite::Result<VideoRecord> {
-        let created_at_str: String = row.get(15)?;
-        let completed_at_str: Option<String> = row.get(16)?;
+        let created_at_str: String = row.get(16)?;
+        let completed_at_str: Option<String> = row.get(17)?;
         Ok(VideoRecord {
             id: row.get(0)?,
             project_id: row.get(1)?,
             task_id: row.get(2)?,
             file_path: row.get(3)?,
-            prompt: row.get(4)?,
-            model: row.get(5)?,
-            generation_type: row.get(6)?,
-            source_image_id: row.get(7)?,
-            resolution: row.get(8)?,
-            duration: row.get(9)?,
-            fps: row.get(10)?,
-            aspect_ratio: row.get(11)?,
-            status: row.get(12)?,
-            error_message: row.get(13)?,
-            tokens_used: row.get(14)?,
+            thumbnail: row.get(4)?,
+            prompt: row.get(5)?,
+            model: row.get(6)?,
+            generation_type: row.get(7)?,
+            source_image_id: row.get(8)?,
+            resolution: row.get(9)?,
+            duration: row.get(10)?,
+            fps: row.get(11)?,
+            aspect_ratio: row.get(12)?,
+            status: row.get(13)?,
+            error_message: row.get(14)?,
+            tokens_used: row.get(15)?,
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),

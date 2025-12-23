@@ -18,6 +18,9 @@ interface ImageDropZoneProps {
     original_height: number;
   }>;
   maxImages?: number;
+  label?: string;
+  compact?: boolean;
+  singleImageFill?: boolean; // When true and maxImages=1, image fills the container
 }
 
 export function ImageDropZone({
@@ -25,6 +28,9 @@ export function ImageDropZone({
   onImagesChange,
   onReadImage,
   maxImages = 14,
+  label,
+  compact = false,
+  singleImageFill = false,
 }: ImageDropZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -53,45 +59,26 @@ export function ImageDropZone({
         try {
           const imageData = JSON.parse(textData);
           // Verify it's our image data format
-          if (imageData.type === "ai-artstation-image" && images.length < maxImages) {
-            // Check for duplicate by file_path
-            if (imageData.file_path && images.some(img => img.file_path === imageData.file_path)) {
+          // For singleImageFill, always allow (will replace). Otherwise check limit.
+          if (imageData.type === "ai-artstation-image" && (singleImageFill || images.length < maxImages)) {
+            // Check for duplicate by file_path (skip for singleImageFill as it replaces)
+            if (!singleImageFill && imageData.file_path && images.some(img => img.file_path === imageData.file_path)) {
               return; // Already exists, skip
             }
 
-            // If we have base64, use it directly
-            if (imageData.base64) {
+            // Use thumbnail for fast preview, store file_path for generation
+            if (imageData.base64 || imageData.file_path) {
               const newImage: ReferenceImage = {
                 id: crypto.randomUUID(),
-                base64: imageData.base64,
+                base64: imageData.base64 || "", // Thumbnail for preview
                 width: imageData.width || 0,
                 height: imageData.height || 0,
                 was_resized: false,
                 original_width: imageData.width || 0,
                 original_height: imageData.height || 0,
-                file_path: imageData.file_path,
+                file_path: imageData.file_path, // Store path for full-res loading during generation
               };
-              onImagesChange([...images, newImage]);
-              return;
-            } else if (imageData.file_path) {
-              // No base64, load from file path
-              setLoading(true);
-              try {
-                const result = await onReadImage(imageData.file_path);
-                const newImage: ReferenceImage = {
-                  id: crypto.randomUUID(),
-                  base64: result.base64,
-                  width: result.width,
-                  height: result.height,
-                  was_resized: result.was_resized,
-                  original_width: result.original_width,
-                  original_height: result.original_height,
-                  file_path: imageData.file_path,
-                };
-                onImagesChange([...images, newImage]);
-              } finally {
-                setLoading(false);
-              }
+              onImagesChange(singleImageFill ? [newImage] : [...images, newImage]);
               return;
             }
           }
@@ -101,22 +88,28 @@ export function ImageDropZone({
       }
 
       // Handle file drops from file system
-      const files = Array.from(e.dataTransfer.files).filter((file) =>
+      let files = Array.from(e.dataTransfer.files).filter((file) =>
         file.type.startsWith("image/")
       );
 
       if (files.length === 0) return;
 
+      // For singleImageFill, only take the first file
+      if (singleImageFill) {
+        files = [files[0]];
+      }
+
       setLoading(true);
       try {
         const newImages: ReferenceImage[] = [];
         for (const file of files) {
-          if (images.length + newImages.length >= maxImages) break;
+          // For singleImageFill, skip limit check (we're replacing)
+          if (!singleImageFill && images.length + newImages.length >= maxImages) break;
 
           try {
-            // Check for duplicate by filename
-            if (images.some(img => img.file_path === file.name) ||
-                newImages.some(img => img.file_path === file.name)) {
+            // Check for duplicate by filename (skip for singleImageFill as it replaces)
+            if (!singleImageFill && (images.some(img => img.file_path === file.name) ||
+                newImages.some(img => img.file_path === file.name))) {
               continue; // Already exists, skip
             }
 
@@ -150,36 +143,42 @@ export function ImageDropZone({
             console.error("Failed to process image:", err);
           }
         }
-        onImagesChange([...images, ...newImages]);
+        // For singleImageFill, replace instead of append
+        onImagesChange(singleImageFill ? newImages : [...images, ...newImages]);
       } finally {
         setLoading(false);
       }
     },
-    [images, maxImages, onImagesChange]
+    [images, maxImages, onImagesChange, singleImageFill]
   );
 
   const handleSelectFiles = async () => {
     try {
       const selected = await open({
-        multiple: true,
+        multiple: !singleImageFill, // Single selection for singleImageFill mode
         filters: [
           {
             name: "Images",
             extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff"],
           },
         ],
-        title: "Select Reference Images",
+        title: singleImageFill ? "Select Image" : "Select Reference Images",
       });
 
       if (!selected) return;
 
-      const paths = Array.isArray(selected) ? selected : [selected];
+      let paths = Array.isArray(selected) ? selected : [selected];
+      // For singleImageFill, only take the first path
+      if (singleImageFill) {
+        paths = [paths[0]];
+      }
       setLoading(true);
 
       try {
         const newImages: ReferenceImage[] = [];
         for (const path of paths) {
-          if (images.length + newImages.length >= maxImages) break;
+          // For singleImageFill, skip limit check (we're replacing)
+          if (!singleImageFill && images.length + newImages.length >= maxImages) break;
 
           try {
             const result = await onReadImage(path);
@@ -197,7 +196,8 @@ export function ImageDropZone({
             console.error("Failed to process image:", err);
           }
         }
-        onImagesChange([...images, ...newImages]);
+        // For singleImageFill, replace instead of append
+        onImagesChange(singleImageFill ? newImages : [...images, ...newImages]);
       } finally {
         setLoading(false);
       }
@@ -214,13 +214,15 @@ export function ImageDropZone({
     onImagesChange([]);
   };
 
+  const displayLabel = label || `参考图片 (${images.length}/${maxImages})`;
+
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <Label>
-          参考图片 ({images.length}/{maxImages})
+    <div className={cn("flex flex-col", singleImageFill ? "h-full gap-1" : "gap-2")}>
+      <div className="flex items-center justify-between flex-shrink-0">
+        <Label className={cn(compact ? "text-xs" : "", singleImageFill && "text-xs")}>
+          {displayLabel}
         </Label>
-        {images.length > 0 && (
+        {images.length > 0 && !compact && !singleImageFill && (
           <Button
             variant="ghost"
             size="sm"
@@ -240,7 +242,12 @@ export function ImageDropZone({
           e.preventDefault();
         }}
         className={cn(
-          "border-2 border-dashed rounded-lg p-3 transition-colors min-h-[140px]",
+          "border-2 border-dashed rounded-lg transition-colors",
+          singleImageFill
+            ? "p-1 flex-1 min-h-0 overflow-hidden"
+            : compact
+              ? "p-2 min-h-[80px]"
+              : "p-3 min-h-[140px]",
           isDragging
             ? "border-primary bg-primary/10"
             : "border-border hover:border-muted-foreground/50",
@@ -254,23 +261,56 @@ export function ImageDropZone({
         )}
 
         {images.length === 0 ? (
-          <div className="text-center py-4">
-            <ImagePlus className="mx-auto h-8 w-8 text-muted-foreground stroke-1" />
-            <p className="mt-2 text-sm text-muted-foreground">
-              拖放图片到这里或{" "}
-              <button
-                onClick={handleSelectFiles}
-                className="text-primary hover:underline"
-              >
-                浏览
-              </button>
+          <div className={cn("text-center", compact ? "py-2" : "py-4", singleImageFill && "h-full flex flex-col items-center justify-center")}>
+            <ImagePlus className={cn("mx-auto text-muted-foreground stroke-1", compact ? "h-6 w-6" : "h-8 w-8")} />
+            <p className={cn("mt-2 text-muted-foreground", compact ? "text-xs" : "text-sm")}>
+              {compact || singleImageFill ? (
+                <button
+                  onClick={handleSelectFiles}
+                  className="text-primary hover:underline"
+                >
+                  选择图片
+                </button>
+              ) : (
+                <>
+                  拖放图片到这里或{" "}
+                  <button
+                    onClick={handleSelectFiles}
+                    className="text-primary hover:underline"
+                  >
+                    浏览
+                  </button>
+                </>
+              )}
             </p>
-            <p className="mt-1 text-xs text-muted-foreground/70">
-              拖放生成的图片作为参考
-            </p>
+            {!compact && !singleImageFill && (
+              <p className="mt-1 text-xs text-muted-foreground/70">
+                拖放生成的图片作为参考
+              </p>
+            )}
+          </div>
+        ) : singleImageFill && images.length === 1 ? (
+          // Single image fill mode - image fills the container
+          <div className="relative group h-full">
+            <img
+              src={images[0].base64}
+              alt="Reference"
+              className="w-full h-full object-cover rounded-md"
+            />
+            {images[0].was_resized && (
+              <div className="absolute bottom-1 left-1 bg-yellow-500/90 text-black text-[10px] px-1 rounded font-medium">
+                已缩放
+              </div>
+            )}
+            <button
+              onClick={() => handleRemoveImage(images[0].id)}
+              className="absolute top-1 right-1 bg-destructive text-destructive-foreground p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/90"
+            >
+              <X className="w-3 h-3" />
+            </button>
           </div>
         ) : (
-          <div className="grid grid-cols-4 gap-2">
+          <div className={cn("grid gap-2", compact ? "grid-cols-2" : "grid-cols-4")}>
             {images.map((img) => (
               <div key={img.id} className="relative group">
                 <img
@@ -278,7 +318,7 @@ export function ImageDropZone({
                   alt="Reference"
                   className="w-full aspect-square object-cover rounded-md"
                 />
-                {img.was_resized && (
+                {img.was_resized && !compact && (
                   <div className="absolute bottom-1 left-1 bg-yellow-500/90 text-black text-[10px] px-1 rounded font-medium">
                     已缩放
                   </div>
@@ -296,7 +336,7 @@ export function ImageDropZone({
                 onClick={handleSelectFiles}
                 className="aspect-square border-2 border-dashed border-border rounded-md flex items-center justify-center hover:border-muted-foreground/50 hover:bg-accent transition-colors"
               >
-                <Plus className="w-6 h-6 text-muted-foreground" />
+                <Plus className={cn("text-muted-foreground", compact ? "w-4 h-4" : "w-6 h-6")} />
               </button>
             )}
           </div>

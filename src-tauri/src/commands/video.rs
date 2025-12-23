@@ -13,6 +13,7 @@ pub struct Video {
     pub project_id: Option<String>,
     pub task_id: String,
     pub file_path: Option<String>,
+    pub thumbnail: Option<String>,
     pub prompt: String,
     pub model: String,
     pub generation_type: String,
@@ -166,6 +167,7 @@ pub async fn generate_video(
         project_id: Some(request.project_id),
         task_id: response.id.clone(),
         file_path: None,
+        thumbnail: None,
         prompt: request.prompt,
         model: config.video_model,
         generation_type: request.generation_type,
@@ -235,7 +237,7 @@ pub async fn poll_video_task(
 
     // If status changed, update database
     if new_status != record.status {
-        let file_path = if new_status == "completed" {
+        let downloaded = if new_status == "completed" {
             // Download video if completed
             if let Some(content) = &status_response.content {
                 if let Some(video_url) = &content.video_url {
@@ -264,7 +266,8 @@ pub async fn poll_video_task(
             let db = db_state.database.lock().map_err(|e| e.to_string())?;
             let update = VideoStatusUpdate {
                 status: new_status,
-                file_path: file_path.as_deref(),
+                file_path: downloaded.as_ref().map(|d| d.file_path.as_str()),
+                thumbnail: downloaded.as_ref().and_then(|d| d.thumbnail.as_deref()),
                 resolution: status_response.resolution.as_deref(),
                 duration: status_response.duration,
                 fps: status_response.framespersecond,
@@ -358,6 +361,7 @@ fn map_to_video(record: VideoRecord) -> Video {
         project_id: record.project_id,
         task_id: record.task_id,
         file_path: record.file_path,
+        thumbnail: record.thumbnail,
         prompt: record.prompt,
         model: record.model,
         generation_type: record.generation_type,
@@ -374,7 +378,13 @@ fn map_to_video(record: VideoRecord) -> Video {
     }
 }
 
-async fn download_video(url: &str, output_dir: &str, organize_by_date: bool) -> Result<String, String> {
+/// Result of downloading a video, including the file path and optional thumbnail
+struct DownloadedVideo {
+    file_path: String,
+    thumbnail: Option<String>,
+}
+
+async fn download_video(url: &str, output_dir: &str, organize_by_date: bool) -> Result<DownloadedVideo, String> {
     use std::path::PathBuf;
     use chrono::Local;
 
@@ -401,7 +411,62 @@ async fn download_video(url: &str, output_dir: &str, organize_by_date: bool) -> 
     }
 
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
 
-    Ok(path.to_string_lossy().to_string())
+    let file_path = path.to_string_lossy().to_string();
+
+    // Generate thumbnail from the video
+    let thumbnail = generate_video_thumbnail(&file_path).ok();
+
+    Ok(DownloadedVideo {
+        file_path,
+        thumbnail,
+    })
+}
+
+/// Extract a frame from the video and create a base64 thumbnail
+fn generate_video_thumbnail(video_path: &str) -> Result<String, String> {
+    use std::process::Command;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    // Create a temp file for the extracted frame
+    let temp_dir = std::env::temp_dir();
+    let frame_path = temp_dir.join(format!("frame_{}.jpg", uuid::Uuid::new_v4()));
+
+    // Use ffmpeg to extract a frame at 0.5 seconds (or first frame if video is shorter)
+    let output = Command::new("ffmpeg")
+        .args([
+            "-y",                           // Overwrite output
+            "-i", video_path,               // Input video
+            "-ss", "0.5",                   // Seek to 0.5 seconds
+            "-vframes", "1",                // Extract 1 frame
+            "-vf", "scale=200:-1",          // Scale to 200px width, maintain aspect ratio
+            "-q:v", "2",                    // High quality JPEG
+            frame_path.to_str().unwrap(),
+        ])
+        .output();
+
+    match output {
+        Ok(result) => {
+            if !result.status.success() {
+                // ffmpeg failed, clean up and return error
+                let _ = std::fs::remove_file(&frame_path);
+                return Err("ffmpeg failed to extract frame".to_string());
+            }
+        }
+        Err(_) => {
+            // ffmpeg not available, try with first-frame approach or return error
+            return Err("ffmpeg not available".to_string());
+        }
+    }
+
+    // Read the extracted frame and convert to base64
+    let frame_data = std::fs::read(&frame_path).map_err(|e| e.to_string())?;
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&frame_path);
+
+    // Convert to base64 data URL
+    let encoded = STANDARD.encode(&frame_data);
+    Ok(format!("data:image/jpeg;base64,{}", encoded))
 }

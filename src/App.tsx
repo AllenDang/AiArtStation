@@ -9,8 +9,8 @@ import { SettingsPage } from "./components/Settings";
 import { ProjectSelector, WelcomeScreen } from "./components/Project";
 import { Sidebar, OptionsPanel } from "./components/Layout";
 
-import { useProjects, useGenerationTasks, useGallery } from "./hooks";
-import type { AssetType, AssetTypeCounts } from "./types";
+import { useProjects, useGenerationTasks, useGallery, useVideoGeneration } from "./hooks";
+import type { AssetType, AssetTypeCounts, GenerateVideoRequestWithPaths } from "./types";
 
 type ViewMode = "history-images" | "history-videos" | "history-all";
 
@@ -93,6 +93,27 @@ function App() {
     retryTask,
     dismissTask,
   } = useGenerationTasks({ onTaskComplete: handleTaskComplete });
+
+  // Video generation
+  const { generateVideo, pendingVideos, deleteVideo } = useVideoGeneration({
+    onTaskComplete: handleTaskComplete,
+  });
+
+  // Handle video task start
+  const handleStartVideoTask = useCallback((request: GenerateVideoRequestWithPaths) => {
+    // generateVideo adds to state immediately and runs API in background
+    generateVideo(request);
+  }, [generateVideo]);
+
+  // Handle video delete
+  const handleDeleteVideo = useCallback(async (id: string) => {
+    try {
+      await deleteVideo(id, true);
+      toast.success("视频已删除");
+    } catch (e) {
+      toast.error(`删除视频失败: ${e}`);
+    }
+  }, [deleteVideo]);
 
   // View state
   const [viewMode, setViewMode] = useState<ViewMode>("history-all");
@@ -225,6 +246,8 @@ function App() {
               onRefreshComplete={handleRefreshComplete}
               selectedAssetType={selectedAssetType}
               onRemoveTag={handleRemoveImageTag}
+              pendingVideos={pendingVideos}
+              onDeleteVideo={handleDeleteVideo}
             />
           </div>
 
@@ -233,6 +256,7 @@ function App() {
             <OptionsPanel
               projectId={currentProject.id}
               onStartImageTask={startImageTask}
+              onStartVideoTask={handleStartVideoTask}
             />
           </div>
         </main>

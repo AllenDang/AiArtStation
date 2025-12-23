@@ -3,48 +3,33 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import type {
   Video,
   GenerateVideoRequest,
+  GenerateVideoRequestWithPaths,
   GenerateVideoResponse,
   VideoGalleryResponse,
+  ReferenceImageInput,
+  ImageFileInfo,
 } from "../types";
 
-export function useVideoGeneration() {
+interface UseVideoGenerationOptions {
+  onTaskComplete?: () => Promise<void> | void;
+}
+
+export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingVideos, setPendingVideos] = useState<Video[]>([]);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingVideosRef = useRef<Video[]>([]);
+  const onTaskCompleteRef = useRef(options.onTaskComplete);
 
-  const generateVideo = useCallback(async (request: GenerateVideoRequest) => {
-    setGenerating(true);
-    setError(null);
-    try {
-      const response = await invoke<GenerateVideoResponse>("generate_video", {
-        request,
-      });
-      // Refresh pending videos to include new task
-      await loadPendingVideos();
-      return response;
-    } catch (e) {
-      setError(String(e));
-      throw e;
-    } finally {
-      setGenerating(false);
-    }
-  }, []);
+  // Keep refs in sync with state/options
+  useEffect(() => {
+    pendingVideosRef.current = pendingVideos;
+  }, [pendingVideos]);
 
-  const pollVideoTask = useCallback(async (id: string) => {
-    try {
-      const video = await invoke<Video>("poll_video_task", { id });
-      // Update pending videos list
-      setPendingVideos((prev) =>
-        prev.map((v) => (v.id === id ? video : v)).filter(
-          (v) => v.status === "pending" || v.status === "processing"
-        )
-      );
-      return video;
-    } catch (e) {
-      throw new Error(`Failed to poll video task: ${e}`);
-    }
-  }, []);
+  useEffect(() => {
+    onTaskCompleteRef.current = options.onTaskComplete;
+  }, [options.onTaskComplete]);
 
   const loadPendingVideos = useCallback(async () => {
     try {
@@ -54,6 +39,126 @@ export function useVideoGeneration() {
     } catch (e) {
       console.error("Failed to load pending videos:", e);
       return [];
+    }
+  }, []);
+
+  // Helper to read full-resolution image from file path
+  const readImageFromPath = async (input: ReferenceImageInput | undefined): Promise<string | undefined> => {
+    if (!input) return undefined;
+    if (input.file_path) {
+      try {
+        const result = await invoke<ImageFileInfo>("read_image_file", { path: input.file_path });
+        return result.base64;
+      } catch (e) {
+        console.error("Failed to read image file:", e);
+        // Fallback to base64 if available
+        if (input.base64) return input.base64;
+        throw e;
+      }
+    }
+    return input.base64;
+  };
+
+  const generateVideo = useCallback((request: GenerateVideoRequestWithPaths) => {
+    // Create a temporary ID for immediate display
+    const tempId = crypto.randomUUID();
+
+    // Add to state IMMEDIATELY - same pattern as image generation
+    const newVideo: Video = {
+      id: tempId,
+      task_id: "",
+      project_id: request.project_id,
+      prompt: request.prompt,
+      model: "",
+      generation_type: request.generation_type,
+      status: "pending" as const,
+      created_at: new Date().toISOString(),
+      resolution: request.resolution,
+      duration: request.duration,
+      aspect_ratio: request.aspect_ratio,
+    };
+    setPendingVideos((prev) => [newVideo, ...prev]);
+
+    // Run file reading + API call in background (don't await)
+    (async () => {
+      setGenerating(true);
+      setError(null);
+      try {
+        // Read full-resolution images from file paths
+        const [firstFrame, lastFrame, refImages] = await Promise.all([
+          readImageFromPath(request.first_frame_input),
+          readImageFromPath(request.last_frame_input),
+          Promise.all((request.reference_image_inputs || []).map(input => readImageFromPath(input))),
+        ]);
+
+        // Build final request with base64 images
+        const finalRequest: GenerateVideoRequest = {
+          project_id: request.project_id,
+          prompt: request.prompt,
+          generation_type: request.generation_type,
+          first_frame: firstFrame,
+          last_frame: lastFrame,
+          reference_images: refImages.filter((img): img is string => !!img),
+          resolution: request.resolution,
+          duration: request.duration,
+          aspect_ratio: request.aspect_ratio,
+          source_image_id: request.source_image_id,
+        };
+
+        const response = await invoke<GenerateVideoResponse>("generate_video", {
+          request: finalRequest,
+        });
+
+        // Update the temp video with real ID from backend
+        setPendingVideos((prev) =>
+          prev.map((v) =>
+            v.id === tempId
+              ? { ...v, id: response.id, task_id: response.task_id }
+              : v
+          )
+        );
+      } catch (e) {
+        setError(String(e));
+        // Mark as failed
+        setPendingVideos((prev) =>
+          prev.map((v) =>
+            v.id === tempId
+              ? { ...v, status: "failed" as const, error_message: String(e) }
+              : v
+          )
+        );
+      } finally {
+        setGenerating(false);
+      }
+    })();
+  }, []);
+
+  const pollVideoTask = useCallback(async (id: string) => {
+    try {
+      const video = await invoke<Video>("poll_video_task", { id });
+
+      // Check if this video just completed (was pending/processing, now completed)
+      const prevVideo = pendingVideosRef.current.find(v => v.id === id);
+      const justCompleted = prevVideo &&
+        (prevVideo.status === "pending" || prevVideo.status === "processing") &&
+        (video.status === "completed" || video.status === "failed");
+
+      // Update video in list (keep it visible, don't filter out)
+      setPendingVideos((prev) =>
+        prev.map((v) => (v.id === id ? video : v))
+      );
+
+      // If just completed, wait for gallery refresh then remove
+      if (justCompleted) {
+        (async () => {
+          await onTaskCompleteRef.current?.();
+          setPendingVideos((prev) => prev.filter((v) => v.id !== id));
+        })();
+      }
+
+      return video;
+    } catch (e) {
+      throw new Error(`Failed to poll video task: ${e}`);
     }
   }, []);
 
@@ -92,16 +197,20 @@ export function useVideoGeneration() {
   const startPolling = useCallback(() => {
     if (pollingRef.current) return;
 
-    const poll = async () => {
-      const pending = await loadPendingVideos();
-      for (const video of pending) {
-        await pollVideoTask(video.id);
+    // Poll existing pending videos without overwriting state
+    const pollExisting = async () => {
+      // Get current pending videos from state (via ref to avoid stale closure)
+      const currentPending = pendingVideosRef.current;
+      for (const video of currentPending) {
+        if (video.status === "pending" || video.status === "processing") {
+          await pollVideoTask(video.id);
+        }
       }
     };
 
-    pollingRef.current = setInterval(poll, 10000); // Poll every 10 seconds
-    poll(); // Initial poll
-  }, [loadPendingVideos, pollVideoTask]);
+    pollingRef.current = setInterval(pollExisting, 10000); // Poll every 10 seconds
+    // Don't poll immediately - let optimistic update show first
+  }, [pollVideoTask]);
 
   // Stop polling
   const stopPolling = useCallback(() => {

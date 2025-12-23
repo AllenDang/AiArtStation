@@ -3,7 +3,10 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import type {
   GenerationTask,
   GenerateImageRequest,
+  GenerateImageRequestWithPaths,
   GenerateImageResponse,
+  ReferenceImageInput,
+  ImageFileInfo,
 } from "../types";
 
 interface UseGenerationTasksOptions {
@@ -28,33 +31,67 @@ export function useGenerationTasks(options: UseGenerationTasksOptions = {}) {
     );
   }, []);
 
+  // Helper to read full-resolution image from file path
+  const readImageFromPath = async (input: ReferenceImageInput): Promise<string> => {
+    if (input.file_path) {
+      try {
+        const result = await invoke<ImageFileInfo>("read_image_file", { path: input.file_path });
+        return result.base64;
+      } catch (e) {
+        console.error("Failed to read image file:", e);
+        // Fallback to base64 if available
+        if (input.base64) return input.base64;
+        throw e;
+      }
+    }
+    return input.base64 || "";
+  };
+
   // Start a new image generation task
   const startImageTask = useCallback(
-    async (request: GenerateImageRequest): Promise<string> => {
+    (request: GenerateImageRequestWithPaths): string => {
       const taskId = crypto.randomUUID();
       const now = new Date().toISOString();
 
-      // Create task with "starting" status
+      // Create placeholder request for task storage (actual reference_images will be filled later)
+      const placeholderRequest: GenerateImageRequest = {
+        ...request,
+        reference_images: [], // Will be filled after file reading
+      };
+
+      // Create task with "starting" status - IMMEDIATELY
       const newTask: GenerationTask = {
         id: taskId,
         type: "image",
         status: "starting",
         prompt: request.prompt,
-        request,
+        request: placeholderRequest,
+        requestWithPaths: request, // Store for retry
         created_at: now,
       };
 
       setTasks((prev) => [newTask, ...prev]);
 
-      // Run generation asynchronously
+      // Run file reading + generation asynchronously (in background)
       (async () => {
         try {
-          // Update to "generating"
+          // Update to "generating" while reading files
           updateTask(taskId, { status: "generating" });
+
+          // Read full-resolution images from file paths
+          const referenceImages = await Promise.all(
+            request.reference_image_inputs.map(input => readImageFromPath(input))
+          );
+
+          // Build final request with base64 images
+          const finalRequest: GenerateImageRequest = {
+            ...request,
+            reference_images: referenceImages,
+          };
 
           // Call the Tauri command
           const response = await invoke<GenerateImageResponse>("generate_image", {
-            request,
+            request: finalRequest,
           });
 
           // Update task to show the completed image preview
@@ -93,13 +130,30 @@ export function useGenerationTasks(options: UseGenerationTasksOptions = {}) {
         error: undefined,
       });
 
-      // Run generation again
+      // Run generation again (re-read files from paths if available)
       (async () => {
         try {
           updateTask(taskId, { status: "generating" });
 
+          let finalRequest: GenerateImageRequest;
+
+          // Use requestWithPaths if available (re-read files)
+          if (task.requestWithPaths && 'reference_image_inputs' in task.requestWithPaths) {
+            const requestWithPaths = task.requestWithPaths as GenerateImageRequestWithPaths;
+            const referenceImages = await Promise.all(
+              requestWithPaths.reference_image_inputs.map(input => readImageFromPath(input))
+            );
+            finalRequest = {
+              ...requestWithPaths,
+              reference_images: referenceImages,
+            };
+          } else {
+            // Fallback to stored request
+            finalRequest = task.request as GenerateImageRequest;
+          }
+
           const response = await invoke<GenerateImageResponse>("generate_image", {
-            request: task.request as GenerateImageRequest,
+            request: finalRequest,
           });
 
           // Update task to show the completed image preview

@@ -56,6 +56,7 @@ export interface Video {
   project_id?: string;
   task_id: string;
   file_path?: string;
+  thumbnail?: string;
   prompt: string;
   model: string;
   generation_type: VideoGenerationType;
@@ -82,6 +83,13 @@ export interface GenerateVideoRequest {
   duration?: number;        // 2-12 seconds
   aspect_ratio?: string;    // "16:9", "4:3", "1:1", etc.
   source_image_id?: string; // Parent image ID if applicable
+}
+
+// Request with file paths - for hooks to process
+export interface GenerateVideoRequestWithPaths extends Omit<GenerateVideoRequest, 'first_frame' | 'last_frame' | 'reference_images'> {
+  first_frame_input?: ReferenceImageInput;
+  last_frame_input?: ReferenceImageInput;
+  reference_image_inputs?: ReferenceImageInput[];
 }
 
 export interface GenerateVideoResponse {
@@ -118,11 +126,17 @@ export interface SaveConfigRequest {
   output_format: string;
 }
 
+// Reference image input - can be either base64 or file path
+export interface ReferenceImageInput {
+  base64?: string;      // Pre-encoded base64
+  file_path?: string;   // Path to read full-res image from
+}
+
 // Image Generation
 export interface GenerateImageRequest {
   project_id: string;
   prompt: string;
-  reference_images: string[];
+  reference_images: string[];  // Final base64 strings sent to API
   size?: string;
   aspect_ratio?: string;
   watermark?: boolean;
@@ -132,6 +146,11 @@ export interface GenerateImageRequest {
   // Prompt optimization
   optimize_prompt?: boolean;
   optimize_prompt_mode?: "standard" | "fast";
+}
+
+// Request with file paths - for hooks to process
+export interface GenerateImageRequestWithPaths extends Omit<GenerateImageRequest, 'reference_images'> {
+  reference_image_inputs: ReferenceImageInput[];
 }
 
 export interface GeneratedImageInfo {
@@ -231,6 +250,8 @@ export interface GenerationTask {
   images?: GeneratedImageInfo[];
   tokens_used?: number;
   request: GenerateImageRequest | GenerateVideoRequest;
+  // Store original request with paths for retry
+  requestWithPaths?: GenerateImageRequestWithPaths | GenerateVideoRequestWithPaths;
   created_at: string;
 }
 

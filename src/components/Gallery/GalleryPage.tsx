@@ -19,11 +19,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { useGallery, useFiles } from "../../hooks";
-import type { GalleryImage, GenerationTask, ImageBundle, AssetType } from "../../types";
+import { useGallery, useFiles, useVideoGeneration } from "../../hooks";
+import type { GalleryImage, GenerationTask, ImageBundle, AssetType, Video as VideoType } from "../../types";
 import { TaskCard, TaskImagePreview } from "../Generation";
 import { ImageBundleCard } from "./ImageBundleCard";
 import { BundleImagePreview } from "./BundleImagePreview";
+import { VideoTaskCard, VideoPreview } from "../Video";
 import {
   Search,
   X,
@@ -63,6 +64,8 @@ interface GalleryPageProps {
   onRefreshComplete?: () => void;
   selectedAssetType?: AssetType | null;
   onRemoveTag?: (imageId: string, assetType: AssetType) => void;
+  pendingVideos?: VideoType[];
+  onDeleteVideo?: (id: string) => void;
 }
 
 export function GalleryPage({
@@ -75,6 +78,8 @@ export function GalleryPage({
   onRefreshComplete,
   selectedAssetType = null,
   onRemoveTag,
+  pendingVideos = [],
+  onDeleteVideo,
 }: GalleryPageProps) {
   const {
     images,
@@ -88,8 +93,16 @@ export function GalleryPage({
     readImageRaw,
   } = useGallery();
   const { openFile, revealFile } = useFiles();
+  const { getVideos, deleteVideo: deleteVideoFromDb } = useVideoGeneration();
 
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Video state
+  const [videos, setVideos] = useState<VideoType[]>([]);
+  const [videosHasMore, setVideosHasMore] = useState(false);
+  const [videosLoading, setVideosLoading] = useState(false);
+  const [videoPage, setVideoPage] = useState(0);
+  const [selectedVideo, setSelectedVideo] = useState<VideoType | null>(null);
   const [selectedImage, setSelectedImage] = useState<GalleryImage | null>(null);
   const [fullImage, setFullImage] = useState<string | null>(null);
   const [page, setPage] = useState(0);
@@ -158,7 +171,9 @@ export function GalleryPage({
     return items;
   }, [images]);
 
+  // Load images
   useEffect(() => {
+    if (filter === "videos") return; // Don't load images in video mode
     const load = async () => {
       if (selectedAssetType) {
         await loadGalleryByAssetType(projectId, selectedAssetType, 0, 20, true);
@@ -169,7 +184,57 @@ export function GalleryPage({
     };
     load();
     setPage(0);
-  }, [loadGallery, loadGalleryByAssetType, projectId, refreshTrigger, onRefreshComplete, selectedAssetType]);
+  }, [loadGallery, loadGalleryByAssetType, projectId, refreshTrigger, onRefreshComplete, selectedAssetType, filter]);
+
+  // Load videos
+  const loadVideos = useCallback(async (page: number = 0) => {
+    setVideosLoading(true);
+    try {
+      const response = await getVideos(projectId, page, 20);
+      if (page === 0) {
+        setVideos(response.videos);
+      } else {
+        setVideos(prev => [...prev, ...response.videos]);
+      }
+      setVideosHasMore(response.has_more);
+    } catch (e) {
+      toast.error(`加载视频失败: ${e}`);
+    } finally {
+      setVideosLoading(false);
+    }
+  }, [getVideos, projectId]);
+
+  useEffect(() => {
+    if (filter === "images") return; // Don't load videos in images-only mode
+    loadVideos(0);
+    setVideoPage(0);
+    if (filter === "videos") {
+      onRefreshComplete?.();
+    }
+  }, [filter, projectId, refreshTrigger, loadVideos, onRefreshComplete]);
+
+  const handleLoadMoreVideos = useCallback(async () => {
+    const nextPage = videoPage + 1;
+    await loadVideos(nextPage);
+    setVideoPage(nextPage);
+  }, [videoPage, loadVideos]);
+
+  const handleDeleteVideo = useCallback(async (id: string) => {
+    if (onDeleteVideo) {
+      // Use parent handler (handles pendingVideos)
+      onDeleteVideo(id);
+    } else {
+      // Fallback to local delete
+      try {
+        await deleteVideoFromDb(id, true);
+        toast.success("视频已删除");
+      } catch (e) {
+        toast.error(`删除视频失败: ${e}`);
+      }
+    }
+    // Also remove from local videos state (for completed videos)
+    setVideos(prev => prev.filter(v => v.id !== id));
+  }, [onDeleteVideo, deleteVideoFromDb]);
 
   const handleSearch = useCallback(
     async (e: React.FormEvent) => {
@@ -350,25 +415,69 @@ export function GalleryPage({
       {/* Grid */}
       <div className="flex-1 overflow-auto p-4">
         {filter === "videos" ? (
-          <div className="h-full flex items-center justify-center">
-            <div className="text-center text-muted-foreground">
-              <Video className="mx-auto h-16 w-16 mb-4 stroke-1" />
-              <p className="text-lg font-medium">暂无视频</p>
-              <p className="text-sm mt-2">视频生成功能即将推出</p>
+          // Video gallery
+          pendingVideos.length === 0 && videos.length === 0 ? (
+            <div className="h-full flex items-center justify-center">
+              <div className="text-center text-muted-foreground">
+                <Video className="mx-auto h-16 w-16 mb-4 stroke-1" />
+                <p className="text-lg font-medium">暂无视频</p>
+                <p className="text-sm mt-2">生成的视频将显示在这里</p>
+              </div>
             </div>
-          </div>
-        ) : tasks.length === 0 && galleryItems.length === 0 ? (
+          ) : (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                {/* Pending/processing videos */}
+                {pendingVideos.map((video) => (
+                  <VideoTaskCard
+                    key={video.id}
+                    video={video}
+                    onClick={setSelectedVideo}
+                    onDismiss={handleDeleteVideo}
+                  />
+                ))}
+                {/* Completed videos */}
+                {videos.filter(v => v.status === "completed").map((video) => (
+                  <VideoTaskCard
+                    key={video.id}
+                    video={video}
+                    onClick={setSelectedVideo}
+                    onDismiss={handleDeleteVideo}
+                  />
+                ))}
+              </div>
+              {videosHasMore && (
+                <div className="mt-6 text-center">
+                  <Button
+                    onClick={handleLoadMoreVideos}
+                    disabled={videosLoading}
+                    variant="outline"
+                  >
+                    {videosLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        加载中...
+                      </>
+                    ) : (
+                      "加载更多"
+                    )}
+                  </Button>
+                </div>
+              )}
+            </>
+          )
+        ) : tasks.length === 0 && pendingVideos.length === 0 && galleryItems.length === 0 && (filter !== "all" || videos.length === 0) ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-center text-muted-foreground">
               <ImageIcon className="mx-auto h-16 w-16 mb-4 stroke-1" />
-              <p className="text-lg font-medium">暂无图片</p>
-              <p className="text-sm mt-2">生成的图片将显示在这里</p>
+              <p className="text-lg font-medium">暂无内容</p>
+              <p className="text-sm mt-2">生成的图片和视频将显示在这里</p>
             </div>
           </div>
         ) : (
           <>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-              {/* Active tasks at the top */}
+              {/* Active image tasks at the top */}
               {tasks.map((task) => (
                 <TaskCard
                   key={task.id}
@@ -376,6 +485,24 @@ export function GalleryPage({
                   onRetry={onRetryTask || (() => {})}
                   onDismiss={onDismissTask || (() => {})}
                   onViewImages={handleViewTaskImages}
+                />
+              ))}
+              {/* Pending video tasks */}
+              {pendingVideos.map((video) => (
+                <VideoTaskCard
+                  key={video.id}
+                  video={video}
+                  onClick={setSelectedVideo}
+                  onDismiss={handleDeleteVideo}
+                />
+              ))}
+              {/* Completed videos (in "all" mode) */}
+              {filter === "all" && videos.filter(v => v.status === "completed").map((video) => (
+                <VideoTaskCard
+                  key={video.id}
+                  video={video}
+                  onClick={setSelectedVideo}
+                  onDismiss={handleDeleteVideo}
                 />
               ))}
               {/* Completed images and bundles */}
@@ -631,6 +758,16 @@ export function GalleryPage({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Video Preview Modal */}
+      <VideoPreview
+        video={selectedVideo}
+        open={!!selectedVideo}
+        onOpenChange={(open) => !open && setSelectedVideo(null)}
+        onOpenFile={openFile}
+        onRevealFile={revealFile}
+        onDelete={handleDeleteVideo}
+      />
     </div>
   );
 }
