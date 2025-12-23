@@ -817,10 +817,8 @@ impl Database {
             .collect();
 
         for (id, file_path) in image_rows {
-            if !std::path::Path::new(&file_path).exists() {
-                if self.delete_image(&id)? {
-                    images_removed += 1;
-                }
+            if !std::path::Path::new(&file_path).exists() && self.delete_image(&id)? {
+                images_removed += 1;
             }
         }
 
@@ -832,10 +830,8 @@ impl Database {
             .collect();
 
         for (id, file_path) in video_rows {
-            if !std::path::Path::new(&file_path).exists() {
-                if self.delete_video(&id)? {
-                    videos_removed += 1;
-                }
+            if !std::path::Path::new(&file_path).exists() && self.delete_video(&id)? {
+                videos_removed += 1;
             }
         }
 
