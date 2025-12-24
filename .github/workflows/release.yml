@@ -55,83 +55,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            nasm pkg-config clang
-
-      - name: Install build tools (macOS)
-        if: startsWith(matrix.platform, 'macos')
-        run: |
-          brew install nasm pkg-config
-
-      - name: Setup Windows build environment
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: |
-          # Get Visual Studio installation path
-          $VCINSTALLDIR = $(& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath)
-          Write-Host "Visual Studio path: $VCINSTALLDIR"
-
-          # Set LIBCLANG_PATH for bindgen
-          Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
-
-      - name: Install pkgconf (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: |
-          choco install pkgconfiglite -y
-          Write-Host "pkgconf installed"
-
-      - name: Download pre-built FFmpeg (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: |
-          # Download pre-built static FFmpeg 7.1 LGPL from System233/ffmpeg-msvc-prebuilt
-          # This provides MSVC-compatible static libraries with headers
-          $ffmpegUrl = "https://github.com/System233/ffmpeg-msvc-prebuilt/releases/download/n7.1-241205/ffmpeg-n7.1-241205-lgpl-amd64-static.zip"
-          $ffmpegZip = "C:\ffmpeg.zip"
-          $ffmpegDir = "C:\ffmpeg"
-
-          Write-Host "Downloading pre-built FFmpeg (MSVC static)..."
-          Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip
-
-          Write-Host "Extracting FFmpeg..."
-          Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegDir -Force
-
-          $ffmpegRoot = $ffmpegDir
-
-          Write-Host "FFmpeg extracted to: $ffmpegRoot"
-          Get-ChildItem $ffmpegRoot
-          Get-ChildItem "$ffmpegRoot\lib" | Select-Object -First 20
-
-          # Fix pkg-config files: replace /usr/local with actual Windows path
-          $pkgconfigDir = "$ffmpegRoot\lib\pkgconfig"
-          Get-ChildItem "$pkgconfigDir\*.pc" | ForEach-Object {
-            $content = Get-Content $_.FullName -Raw
-            # Replace Unix paths with Windows paths
-            $content = $content -replace '/usr/local', $ffmpegRoot.Replace('\', '/')
-            $content = $content -replace '-libpath:/usr/local/lib ', "-libpath:$($ffmpegRoot.Replace('\', '/'))/lib "
-            Set-Content $_.FullName -Value $content -NoNewline
-            Write-Host "Fixed: $($_.Name)"
-          }
-
-          # Show a sample fixed .pc file
-          Write-Host "`n=== Sample libavcodec.pc ==="
-          Get-Content "$pkgconfigDir\libavcodec.pc"
-
-          # Set environment variables for ffmpeg-sys-next
-          Add-Content $env:GITHUB_ENV "FFMPEG_DIR=$ffmpegRoot`n"
-          Add-Content $env:GITHUB_ENV "PKG_CONFIG_PATH=$pkgconfigDir`n"
-          Add-Content $env:GITHUB_ENV "PKG_CONFIG_ALLOW_SYSTEM_LIBS=1`n"
-
-          # Patch Cargo.toml to use static linking with pre-built FFmpeg
-          $cargoToml = Get-Content src-tauri/Cargo.toml -Raw
-          $cargoToml = $cargoToml -replace 'ffmpeg-next = \{ version = "8", features = \["static", "build"\] \}', 'ffmpeg-next = { version = "8", features = ["static"] }'
-          Set-Content src-tauri/Cargo.toml -Value $cargoToml
-          Write-Host "`nPatched Cargo.toml to use pre-built static FFmpeg"
-
-          # Verify FFmpeg
-          Write-Host "`nVerifying FFmpeg installation..."
-          & "$ffmpegRoot\bin\ffmpeg.exe" -version
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -156,50 +80,10 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
-      - name: Build the app (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: cmd
-        run: |
-          @echo off
-          REM Setup MSVC environment
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-
-          echo FFMPEG_DIR=%FFMPEG_DIR%
-          echo PKG_CONFIG_PATH=%PKG_CONFIG_PATH%
-
-          REM Verify pkg-config can find FFmpeg
-          pkg-config --libs --static libavcodec libavformat libavutil libswscale libswresample
-
-          REM Build using pre-built static FFmpeg
-          REM RUSTFLAGS includes:
-          REM   1. Library search path for FFmpeg dependencies
-          REM   2. FFmpeg dependency libraries (zlib, SDL2, jxl, vpx, webp, ass, freetype, harfbuzz, etc.)
-          REM   3. Windows system libraries required by FFmpeg and its dependencies
-          set "RUSTFLAGS=-L native=C:/ffmpeg/lib -l static=zlib -l static=SDL2-static -l static=vpxmt -l static=jxl -l static=jxl_threads -l static=jxl_cms -l static=hwy -l static=brotlicommon -l static=brotlidec -l static=brotlienc -l static=libwebp -l static=libwebpmux -l static=libwebpdecoder -l static=libwebpdemux -l static=libsharpyuv -l static=ass -l static=fribidi -l static=freetype -l static=harfbuzz -l static=Imath-3_1 -l static=Iex-3_3 -l static=IlmThread-3_3 -l static=OpenEXR-3_3 -l static=OpenEXRCore-3_3 -l static=OpenEXRUtil-3_3 -C link-arg=user32.lib -C link-arg=bcrypt.lib -C link-arg=secur32.lib -C link-arg=ws2_32.lib -C link-arg=mfuuid.lib -C link-arg=ole32.lib -C link-arg=strmiids.lib -C link-arg=gdi32.lib -C link-arg=kernel32.lib -C link-arg=winmm.lib -C link-arg=imm32.lib -C link-arg=oleaut32.lib -C link-arg=version.lib -C link-arg=uuid.lib -C link-arg=advapi32.lib -C link-arg=setupapi.lib -C link-arg=shell32.lib -C link-arg=dinput8.lib -C link-arg=dxguid.lib"
-
-          REM Reduce parallelism to avoid out-of-memory errors during static linking
-          set "CARGO_BUILD_JOBS=2"
-
-          bun run tauri build
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build the app (Unix)
-        if: matrix.platform != 'windows-latest'
+      - name: Build the app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
-
-      - name: Upload Windows artifacts
-        if: matrix.platform == 'windows-latest'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: |
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/nsis/*.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

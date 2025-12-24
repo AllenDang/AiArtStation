@@ -36,8 +36,10 @@ reqwest = { version = "0.12", features = [
 image = { version = "0.25", features = ["jpeg", "png", "webp", "gif"] }
 base64 = "0.22"
 
-# Video processing (static linking - builds FFmpeg from source for distribution)
-ffmpeg-next = { version = "8", features = ["static", "build"] }
+# Video processing (pure Rust - no FFmpeg dependency)
+mp4parse = "0.17"   # MP4 container parsing
+h264-reader = "0.8" # H.264 NAL parsing
+openh264 = "0.9"    # H.264 decoding
 
 # Encryption
 aes-gcm = "0.10"

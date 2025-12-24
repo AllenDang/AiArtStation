@@ -249,7 +249,7 @@ pub async fn poll_video_task(
             // Download video if completed
             if let Some(content) = &status_response.content {
                 if let Some(video_url) = &content.video_url {
-                    download_video(video_url, &config.output_directory, true)
+                    download_video(video_url, &config.output_directory, &id, true)
                         .await
                         .ok()
                 } else {
@@ -431,7 +431,7 @@ struct DownloadedVideo {
     last_frame_path: Option<String>,
 }
 
-async fn download_video(url: &str, output_dir: &str, organize_by_date: bool) -> Result<DownloadedVideo, String> {
+async fn download_video(url: &str, output_dir: &str, video_id: &str, organize_by_date: bool) -> Result<DownloadedVideo, String> {
     use std::path::PathBuf;
     use chrono::Local;
 
@@ -443,11 +443,24 @@ async fn download_video(url: &str, output_dir: &str, organize_by_date: bool) -> 
     }
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
 
-    // Generate filename
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let hash: String = uuid::Uuid::new_v4().to_string().chars().take(8).collect();
-    let filename = format!("{}_{}.mp4", timestamp, hash);
+    // Generate deterministic filename using video_id to prevent duplicate downloads
+    let id_hash: String = video_id.chars().take(8).collect();
+    let filename = format!("video_{}.mp4", id_hash);
     path.push(&filename);
+
+    // Check if file already exists (prevents race condition with concurrent polls)
+    if path.exists() {
+        let file_path = path.to_string_lossy().to_string();
+        // Extract frames from existing video
+        let frames = extract_video_frames(&file_path).ok();
+        return Ok(DownloadedVideo {
+            file_path,
+            first_frame_thumbnail: frames.as_ref().and_then(|f| f.first_frame_thumbnail.clone()),
+            last_frame_thumbnail: frames.as_ref().and_then(|f| f.last_frame_thumbnail.clone()),
+            first_frame_path: frames.as_ref().and_then(|f| f.first_frame_path.clone()),
+            last_frame_path: frames.as_ref().and_then(|f| f.last_frame_path.clone()),
+        });
+    }
 
     // Download video
     let client = reqwest::Client::new();
@@ -530,148 +543,318 @@ enum FramePosition {
     End,
 }
 
-/// Extract a single frame from video at specified position using ffmpeg-next
+/// Extract a single frame from video at specified position using pure Rust crates
+/// Uses: mp4parse (container) + openh264 (decoding)
 fn extract_frame_at_position(video_path: &str, output_path: &str, position: FramePosition) -> Result<(), String> {
-    use ffmpeg_next as ffmpeg;
+    use std::fs::File;
+    use std::io::{BufReader, Read, Seek, SeekFrom};
+    use openh264::decoder::Decoder;
+    use openh264::formats::YUVSource;
 
-    ffmpeg::init().map_err(|e| format!("Failed to init ffmpeg: {}", e))?;
+    let file = File::open(video_path).map_err(|e| format!("Failed to open video: {}", e))?;
+    let mut reader = BufReader::new(file);
 
-    let mut ictx = ffmpeg::format::input(&video_path)
-        .map_err(|e| format!("Failed to open video: {}", e))?;
+    // Parse MP4 container
+    let context = mp4parse::read_mp4(&mut reader)
+        .map_err(|e| format!("Failed to parse MP4: {:?}", e))?;
 
-    let video_stream_index = ictx
-        .streams()
-        .best(ffmpeg::media::Type::Video)
-        .ok_or("No video stream found")?
-        .index();
+    // Find video track
+    let video_track = context.tracks.iter()
+        .find(|t| t.track_type == mp4parse::TrackType::Video)
+        .ok_or("No video track found")?;
 
-    let stream = ictx.stream(video_stream_index).ok_or("Failed to get stream")?;
-    let time_base = stream.time_base();
-    let duration = stream.duration();
-
-    let codec_params = stream.parameters();
-    let decoder_ctx = ffmpeg::codec::context::Context::from_parameters(codec_params)
-        .map_err(|e| format!("Failed to create codec context: {}", e))?;
-    let mut decoder = decoder_ctx.decoder().video()
-        .map_err(|e| format!("Failed to create video decoder: {}", e))?;
-
-    // Calculate duration in seconds
-    let duration_secs = if duration > 0 && time_base.numerator() > 0 {
-        duration as f64 * time_base.numerator() as f64 / time_base.denominator() as f64
-    } else {
-        0.0
+    // Get sample count from stts
+    let sample_count = match &video_track.stts {
+        Some(stts) => stts.samples.iter().map(|e| e.sample_count).sum::<u32>(),
+        None => return Err("No time-to-sample table".to_string()),
     };
 
-    // For END position: seek to ~1 second before end, then decode to EOF to get actual last frame
-    // For START position: seek to beginning
-    const AV_TIME_BASE: i64 = 1_000_000;
+    if sample_count == 0 {
+        return Err("Video has no samples".to_string());
+    }
 
-    let (seek_ts, decode_to_eof) = match position {
+    // Find sync samples (keyframes) from stss
+    let sync_samples: Vec<u32> = match &video_track.stss {
+        Some(stss) => stss.samples.iter().copied().collect(),
+        None => {
+            // If no stss, assume all samples are sync (rare for H.264)
+            (1..=sample_count).collect()
+        }
+    };
+
+    if sync_samples.is_empty() {
+        return Err("No keyframes found".to_string());
+    }
+
+    // Get AVC decoder config (SPS/PPS from avcC box)
+    let (sps_data, pps_data) = get_avc_config(video_track)?;
+
+    // Initialize OpenH264 decoder
+    let mut decoder = Decoder::new()
+        .map_err(|e| format!("Failed to create decoder: {:?}", e))?;
+
+    // Feed SPS and PPS first (as Annex B format with start codes)
+    let sps_annexb = add_start_code(&sps_data);
+    let pps_annexb = add_start_code(&pps_data);
+
+    decoder.decode(&sps_annexb).map_err(|e| format!("Failed to decode SPS: {:?}", e))?;
+    decoder.decode(&pps_annexb).map_err(|e| format!("Failed to decode PPS: {:?}", e))?;
+
+    // Determine which samples to decode based on position
+    let (start_sample, end_sample) = match position {
         FramePosition::Start => {
-            // Seek to beginning (0.1s to skip potential black frames)
-            let ts = (0.1 * AV_TIME_BASE as f64) as i64;
-            (ts, false)
+            // For first frame: just decode the first keyframe
+            let first_keyframe = sync_samples[0];
+            (first_keyframe, first_keyframe)
         }
         FramePosition::End => {
-            // Seek to ~1 second before end, then decode to EOF
-            let seek_secs = (duration_secs - 1.0).max(0.0);
-            let ts = (seek_secs * AV_TIME_BASE as f64) as i64;
-            (ts, true)
+            // For last frame: find the keyframe nearest to (but not after) the last sample,
+            // then decode from there through all frames to the end
+            let last_keyframe_before_end = sync_samples.iter()
+                .filter(|&&s| s <= sample_count)
+                .max()
+                .copied()
+                .unwrap_or(sync_samples[0]);
+            (last_keyframe_before_end, sample_count)
         }
     };
 
-    // Seek using FFI directly with AVSEEK_FLAG_BACKWARD
-    let seek_result = unsafe {
-        ffmpeg::ffi::avformat_seek_file(
-            ictx.as_mut_ptr(),
-            -1,
-            i64::MIN,
-            seek_ts,
-            seek_ts,
-            ffmpeg::ffi::AVSEEK_FLAG_BACKWARD,
-        )
+    // Decode frames from start_sample to end_sample, keeping the last decoded frame
+    let mut last_yuv_data: Option<(usize, usize, Vec<u8>)> = None;
+
+    for sample_num in start_sample..=end_sample {
+        // Get sample offset and size
+        let (sample_offset, sample_size) = get_sample_location(video_track, sample_num)?;
+
+        // Read the sample data
+        reader.seek(SeekFrom::Start(sample_offset))
+            .map_err(|e| format!("Failed to seek to sample: {}", e))?;
+        let mut sample_data = vec![0u8; sample_size as usize];
+        reader.read_exact(&mut sample_data)
+            .map_err(|e| format!("Failed to read sample: {}", e))?;
+
+        // Convert sample from AVCC format (length-prefixed) to Annex B (start codes)
+        let annexb_data = avcc_to_annexb(&sample_data)?;
+
+        // Decode the frame
+        let decoded = decoder.decode(&annexb_data)
+            .map_err(|e| format!("Failed to decode frame {}: {:?}", sample_num, e))?;
+
+        // Store the decoded frame if we got one
+        if let Some(yuv) = decoded {
+            let (width, height) = yuv.dimensions();
+            let rgb_len = width * height * 3;
+            let mut rgb_data = vec![0u8; rgb_len];
+            yuv.write_rgb8(&mut rgb_data);
+            last_yuv_data = Some((width, height, rgb_data));
+        }
+    }
+
+    // Use the last successfully decoded frame
+    let (width, height, rgb_data) = last_yuv_data.ok_or("No frame decoded")?;
+
+    // Save as JPEG
+    let img = image::RgbImage::from_raw(width as u32, height as u32, rgb_data)
+        .ok_or("Failed to create image from frame data")?;
+    img.save(output_path)
+        .map_err(|e| format!("Failed to save frame: {}", e))?;
+
+    Ok(())
+}
+
+/// Get sample offset and size from MP4 track
+fn get_sample_location(track: &mp4parse::Track, sample_number: u32) -> Result<(u64, u32), String> {
+    // Get chunk offsets (stco)
+    let chunk_offsets: Vec<u64> = match &track.stco {
+        Some(stco) => stco.offsets.iter().copied().collect(),
+        None => return Err("No chunk offset table".to_string()),
     };
-    if seek_result < 0 {
-        return Err(format!("Failed to seek: error code {}", seek_result));
-    }
 
-    let mut scaler: Option<ffmpeg::software::scaling::Context> = None;
-    let mut last_good_frame: Option<(u32, u32, Vec<u8>)> = None;
+    // Get sample sizes (stsz)
+    let sample_sizes = match &track.stsz {
+        Some(stsz) => &stsz.sample_sizes,
+        None => return Err("No sample size table".to_string()),
+    };
 
-    // Process packets
-    for (stream, packet) in ictx.packets() {
-        if stream.index() != video_stream_index {
-            continue;
-        }
+    // Get sample-to-chunk mapping (stsc)
+    let stsc_entries = match &track.stsc {
+        Some(stsc) => &stsc.samples,
+        None => return Err("No sample-to-chunk table".to_string()),
+    };
 
-        decoder.send_packet(&packet)
-            .map_err(|e| format!("Failed to send packet: {}", e))?;
+    // Find which chunk contains our sample
+    let mut current_sample = 1u32;
 
-        let mut decoded_frame = ffmpeg::frame::Video::empty();
-        while decoder.receive_frame(&mut decoded_frame).is_ok() {
-            // Initialize scaler if needed
-            if scaler.is_none() {
-                scaler = Some(
-                    ffmpeg::software::scaling::Context::get(
-                        decoded_frame.format(),
-                        decoded_frame.width(),
-                        decoded_frame.height(),
-                        ffmpeg::format::Pixel::RGB24,
-                        decoded_frame.width(),
-                        decoded_frame.height(),
-                        ffmpeg::software::scaling::Flags::BILINEAR,
-                    ).map_err(|e| format!("Failed to create scaler: {}", e))?
-                );
+    for (i, entry) in stsc_entries.iter().enumerate() {
+        let first_chunk = entry.first_chunk;
+        let samples_per_chunk = entry.samples_per_chunk;
+
+        // Determine how many chunks this stsc entry covers
+        let next_first_chunk = if i + 1 < stsc_entries.len() {
+            stsc_entries[i + 1].first_chunk
+        } else {
+            chunk_offsets.len() as u32 + 1
+        };
+
+        let num_chunks = next_first_chunk - first_chunk;
+
+        for chunk_in_entry in 0..num_chunks {
+            let chunk_num = first_chunk + chunk_in_entry;
+            let samples_in_chunk = samples_per_chunk;
+
+            if sample_number >= current_sample && sample_number < current_sample + samples_in_chunk {
+                // Found the chunk!
+                let chunk_index = (chunk_num - 1) as usize;
+                let sample_in_chunk = sample_number - current_sample;
+
+                // Calculate offset within chunk
+                let mut offset = chunk_offsets.get(chunk_index)
+                    .copied()
+                    .ok_or("Chunk index out of bounds")?;
+
+                for s in 0..sample_in_chunk {
+                    let idx = (current_sample + s - 1) as usize;
+                    if idx < sample_sizes.len() {
+                        offset += sample_sizes[idx] as u64;
+                    }
+                }
+
+                let size = sample_sizes.get((sample_number - 1) as usize)
+                    .copied()
+                    .ok_or("Sample index out of bounds")?;
+
+                return Ok((offset, size));
             }
 
-            // Convert to RGB
-            let mut rgb_frame = ffmpeg::frame::Video::empty();
-            scaler.as_mut().unwrap().run(&decoded_frame, &mut rgb_frame)
-                .map_err(|e| format!("Failed to scale frame: {}", e))?;
-
-            let width = rgb_frame.width();
-            let height = rgb_frame.height();
-            let data = rgb_frame.data(0).to_vec();
-
-            // Keep this frame
-            last_good_frame = Some((width, height, data));
-
-            if !decode_to_eof {
-                // For START: take first frame and exit immediately
-                break;
-            }
-            // For END: continue decoding to get the actual last frame
-        }
-
-        if !decode_to_eof && last_good_frame.is_some() {
-            break;
+            current_sample += samples_in_chunk;
         }
     }
 
-    // Flush decoder to get any remaining buffered frames
-    if decode_to_eof {
-        decoder.send_eof().ok();
-        let mut decoded_frame = ffmpeg::frame::Video::empty();
-        while decoder.receive_frame(&mut decoded_frame).is_ok() {
-            if let Some(ref mut s) = scaler {
-                let mut rgb_frame = ffmpeg::frame::Video::empty();
-                if s.run(&decoded_frame, &mut rgb_frame).is_ok() {
-                    last_good_frame = Some((rgb_frame.width(), rgb_frame.height(), rgb_frame.data(0).to_vec()));
+    Err(format!("Sample {} not found", sample_number))
+}
+
+/// Extract SPS and PPS from avcC configuration box
+fn get_avc_config(track: &mp4parse::Track) -> Result<(Vec<u8>, Vec<u8>), String> {
+    // Look for avcC in the sample description
+    if let Some(ref stsd) = track.stsd {
+        for desc in &stsd.descriptions {
+            if let mp4parse::SampleEntry::Video(ref video) = desc {
+                match &video.codec_specific {
+                    mp4parse::VideoCodecSpecific::AVCConfig(data) => {
+                        return parse_avcc_data(data);
+                    }
+                    _ => continue,
                 }
             }
         }
     }
 
-    // Save the last good frame
-    if let Some((width, height, data)) = last_good_frame {
-        let img = image::RgbImage::from_raw(width, height, data)
-            .ok_or("Failed to create image from frame data")?;
-        img.save(output_path)
-            .map_err(|e| format!("Failed to save frame: {}", e))?;
-        Ok(())
-    } else {
-        Err("No frame decoded".to_string())
+    Err("No AVC configuration found".to_string())
+}
+
+/// Parse avcC box data to extract SPS and PPS
+fn parse_avcc_data(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    if data.len() < 7 {
+        return Err("avcC data too short".to_string());
     }
+
+    // avcC structure:
+    // [0] configurationVersion
+    // [1] AVCProfileIndication
+    // [2] profile_compatibility
+    // [3] AVCLevelIndication
+    // [4] lengthSizeMinusOne (lower 2 bits)
+    // [5] numOfSequenceParameterSets (lower 5 bits)
+    // Then SPS entries, then PPS entries
+
+    let mut pos = 5;
+
+    // Number of SPS (we only need the first one)
+    let num_sps = (data[pos] & 0x1F) as usize;
+    pos += 1;
+
+    if num_sps == 0 {
+        return Err("No SPS found".to_string());
+    }
+
+    // Read first SPS
+    if pos + 2 > data.len() {
+        return Err("Truncated SPS length".to_string());
+    }
+    let sps_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+    pos += 2;
+
+    if pos + sps_len > data.len() {
+        return Err("Truncated SPS data".to_string());
+    }
+    let sps_data = data[pos..pos + sps_len].to_vec();
+    pos += sps_len;
+
+    // Skip remaining SPS entries if any
+    for _ in 1..num_sps {
+        if pos + 2 > data.len() {
+            return Err("Truncated SPS length".to_string());
+        }
+        let len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+        pos += 2 + len;
+    }
+
+    // Number of PPS
+    if pos >= data.len() {
+        return Err("No PPS count".to_string());
+    }
+    let num_pps = data[pos] as usize;
+    pos += 1;
+
+    if num_pps == 0 {
+        return Err("No PPS found".to_string());
+    }
+
+    // Read first PPS
+    if pos + 2 > data.len() {
+        return Err("Truncated PPS length".to_string());
+    }
+    let pps_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+    pos += 2;
+
+    if pos + pps_len > data.len() {
+        return Err("Truncated PPS data".to_string());
+    }
+    let pps_data = data[pos..pos + pps_len].to_vec();
+
+    Ok((sps_data, pps_data))
+}
+
+/// Convert AVCC format (length-prefixed NALUs) to Annex B format (start codes)
+fn avcc_to_annexb(data: &[u8]) -> Result<Vec<u8>, String> {
+    let mut result = Vec::new();
+    let mut pos = 0;
+
+    // AVCC uses 4-byte length prefix by default
+    let length_size = 4;
+
+    while pos + length_size <= data.len() {
+        let nalu_len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        pos += length_size;
+
+        if pos + nalu_len > data.len() {
+            break; // Truncated, stop here
+        }
+
+        // Add Annex B start code
+        result.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        result.extend_from_slice(&data[pos..pos + nalu_len]);
+        pos += nalu_len;
+    }
+
+    Ok(result)
+}
+
+/// Add Annex B start code to NAL unit
+fn add_start_code(nalu: &[u8]) -> Vec<u8> {
+    let mut result = vec![0x00, 0x00, 0x00, 0x01];
+    result.extend_from_slice(nalu);
+    result
 }
 
 /// Generate a base64 thumbnail from an image file using image crate
