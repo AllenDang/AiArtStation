@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ai-artstation",
-  "identifier": "com.ai-artstation.app",
+  "identifier": "com.ai-artstation",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
