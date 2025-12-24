@@ -74,45 +74,40 @@ jobs:
           # Set LIBCLANG_PATH for bindgen
           Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
 
-      - name: Install FFmpeg via vcpkg (Windows)
+      - name: Download pre-built FFmpeg (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
-        env:
-          VCPKG_BUILD_TYPE: release
         run: |
-          # vcpkg is pre-installed on GitHub Windows runners
-          # Install FFmpeg with static libraries and pkgconf tool
-          vcpkg install ffmpeg:x64-windows-static pkgconf:x64-windows
+          # Download pre-built static FFmpeg 7.1 LGPL from BtbN (compatible with ffmpeg-next 8.x)
+          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-lgpl-7.1.zip"
+          $ffmpegZip = "C:\ffmpeg.zip"
+          $ffmpegDir = "C:\ffmpeg"
 
-          # Set environment variables for ffmpeg-sys-next to find FFmpeg via pkg-config
-          $vcpkgInstalled = "C:\vcpkg\installed"
-          $ffmpegPkgConfig = "$vcpkgInstalled\x64-windows-static\lib\pkgconfig"
-          $pkgconfBin = "$vcpkgInstalled\x64-windows\tools\pkgconf"
+          Write-Host "Downloading pre-built FFmpeg (static)..."
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip
 
-          # Add pkgconf to PATH and set PKG_CONFIG_PATH
-          Add-Content $env:GITHUB_ENV "PKG_CONFIG_PATH=$ffmpegPkgConfig`n"
-          Add-Content $env:GITHUB_ENV "PKG_CONFIG=$pkgconfBin\pkgconf.exe`n"
-          Add-Content $env:GITHUB_PATH "$pkgconfBin`n"
+          Write-Host "Extracting FFmpeg..."
+          Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegDir -Force
 
-          # Set FFMPEG_DIR for direct discovery (alternative to pkg-config)
-          Add-Content $env:GITHUB_ENV "FFMPEG_DIR=$vcpkgInstalled\x64-windows-static`n"
+          # Find the extracted folder (it has version in name)
+          $extractedDir = Get-ChildItem -Path $ffmpegDir -Directory | Select-Object -First 1
+          $ffmpegRoot = $extractedDir.FullName
 
-          # Also set VCPKG variables as fallback
-          Add-Content $env:GITHUB_ENV "VCPKG_ROOT=C:\vcpkg`n"
-          Add-Content $env:GITHUB_ENV "VCPKGRS_TRIPLET=x64-windows-static`n"
-          Add-Content $env:GITHUB_ENV "VCPKG_INSTALLED_ROOT=$vcpkgInstalled`n"
+          Write-Host "FFmpeg extracted to: $ffmpegRoot"
+          Get-ChildItem $ffmpegRoot
 
-          # Patch Cargo.toml to disable 'build' feature (use vcpkg instead of building from source)
+          # Set FFMPEG_DIR for ffmpeg-sys-next to find FFmpeg
+          Add-Content $env:GITHUB_ENV "FFMPEG_DIR=$ffmpegRoot`n"
+
+          # Patch Cargo.toml to use static linking with pre-built FFmpeg
           $cargoToml = Get-Content src-tauri/Cargo.toml -Raw
           $cargoToml = $cargoToml -replace 'ffmpeg-next = \{ version = "8", features = \["static", "build"\] \}', 'ffmpeg-next = { version = "8", features = ["static"] }'
           Set-Content src-tauri/Cargo.toml -Value $cargoToml
-          Write-Host "Patched Cargo.toml to use vcpkg instead of building FFmpeg from source"
+          Write-Host "Patched Cargo.toml to use pre-built static FFmpeg"
 
-          # Verify pkgconf works
-          Write-Host "Verifying pkgconf installation..."
-          & "$pkgconfBin\pkgconf.exe" --version
-          Write-Host "PKG_CONFIG_PATH: $ffmpegPkgConfig"
-          Get-ChildItem $ffmpegPkgConfig
+          # Verify FFmpeg
+          Write-Host "Verifying FFmpeg installation..."
+          & "$ffmpegRoot\bin\ffmpeg.exe" -version
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -145,18 +140,9 @@ jobs:
           REM Setup MSVC environment
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
 
-          REM Debug: Show environment
-          echo PKG_CONFIG_PATH=%PKG_CONFIG_PATH%
-          echo PKG_CONFIG=%PKG_CONFIG%
           echo FFMPEG_DIR=%FFMPEG_DIR%
-          echo VCPKG_ROOT=%VCPKG_ROOT%
 
-          REM Verify pkg-config can find ffmpeg
-          where pkgconf
-          pkgconf --list-all | findstr ffmpeg || echo "pkgconf list failed, continuing..."
-          pkgconf --cflags --libs libavutil || echo "pkgconf libavutil failed, continuing..."
-
-          REM Build using vcpkg-provided FFmpeg (no need to build from source)
+          REM Build using pre-built static FFmpeg
           bun run tauri build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
