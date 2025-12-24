@@ -10,7 +10,7 @@ import { ProjectSelector, WelcomeScreen } from "./components/Project";
 import { Sidebar, OptionsPanel } from "./components/Layout";
 
 import { useProjects, useGenerationTasks, useGallery, useVideoGeneration } from "./hooks";
-import type { AssetType, AssetTypeCounts, GenerateVideoRequestWithPaths } from "./types";
+import type { AssetType, AssetTypeCounts, GenerateVideoRequestWithPaths, OptionsPanelHandle } from "./types";
 
 type ViewMode = "history-images" | "history-videos" | "history-all";
 
@@ -63,6 +63,14 @@ function App() {
   useEffect(() => {
     loadCounts();
   }, [loadCounts]);
+
+  // Ref for OptionsPanel to cleanup references when files are deleted
+  const optionsPanelRef = useRef<OptionsPanelHandle>(null);
+
+  // Cleanup callback for when images/videos are deleted
+  const handleFileDeleted = useCallback((filePath: string) => {
+    optionsPanelRef.current?.cleanupDeletedFile(filePath);
+  }, []);
 
   // Refresh trigger for History
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
@@ -274,12 +282,14 @@ function App() {
               onRemoveVideoTag={handleRemoveVideoTag}
               pendingVideos={pendingVideos}
               onDeleteVideo={handleDeleteVideo}
+              onFileDeleted={handleFileDeleted}
             />
           </div>
 
           {/* Options Panel - always visible at bottom */}
           <div className="flex-shrink-0">
             <OptionsPanel
+              ref={optionsPanelRef}
               projectId={currentProject.id}
               onStartImageTask={startImageTask}
               onStartVideoTask={handleStartVideoTask}

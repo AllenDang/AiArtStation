@@ -295,3 +295,8 @@ export const ASPECT_RATIO_OPTIONS = [
   { label: "2:3", value: "2:3", dimensions: "1664x2496" },
   { label: "21:9", value: "21:9", dimensions: "3024x1296" },
 ] as const;
+
+// OptionsPanel ref handle for external cleanup
+export interface OptionsPanelHandle {
+  cleanupDeletedFile: (filePath: string) => void;
+}

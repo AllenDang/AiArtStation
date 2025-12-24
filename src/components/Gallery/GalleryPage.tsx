@@ -75,6 +75,7 @@ interface GalleryPageProps {
   onRemoveVideoTag?: (videoId: string, assetType: AssetType) => void;
   pendingVideos?: VideoType[];
   onDeleteVideo?: (id: string) => void;
+  onFileDeleted?: (filePath: string) => void;
 }
 
 export function GalleryPage({
@@ -90,6 +91,7 @@ export function GalleryPage({
   onRemoveVideoTag,
   pendingVideos = [],
   onDeleteVideo,
+  onFileDeleted,
 }: GalleryPageProps) {
   const {
     images,
@@ -230,6 +232,9 @@ export function GalleryPage({
   }, [videoPage, loadVideos]);
 
   const handleDeleteVideo = useCallback(async (id: string) => {
+    // Find the video to get file paths before deletion
+    const video = videos.find(v => v.id === id) || pendingVideos.find(v => v.id === id);
+
     if (onDeleteVideo) {
       // Use parent handler (handles pendingVideos)
       onDeleteVideo(id);
@@ -242,9 +247,17 @@ export function GalleryPage({
         toast.error(`删除视频失败: ${e}`);
       }
     }
+
+    // Clean up references in OptionsPanel (video file and extracted frames)
+    if (video) {
+      if (video.file_path) onFileDeleted?.(video.file_path);
+      if (video.first_frame_path) onFileDeleted?.(video.first_frame_path);
+      if (video.last_frame_path) onFileDeleted?.(video.last_frame_path);
+    }
+
     // Also remove from local videos state (for completed videos)
     setVideos(prev => prev.filter(v => v.id !== id));
-  }, [onDeleteVideo, deleteVideoFromDb]);
+  }, [onDeleteVideo, deleteVideoFromDb, videos, pendingVideos, onFileDeleted]);
 
   const handleSearch = useCallback(
     async (e: React.FormEvent) => {
@@ -289,6 +302,10 @@ export function GalleryPage({
       setIsDeleting(true);
       try {
         await deleteImage(image.id, true);
+        // Clean up references in OptionsPanel
+        if (image.file_path) {
+          onFileDeleted?.(image.file_path);
+        }
         toast.success("图片已删除");
         if (selectedImage?.id === image.id) {
           setSelectedImage(null);
@@ -304,7 +321,7 @@ export function GalleryPage({
       // First click - enter confirm state
       setConfirmDeleteId(image.id);
     }
-  }, [confirmDeleteId, deleteImage, selectedImage]);
+  }, [confirmDeleteId, deleteImage, selectedImage, onFileDeleted]);
 
   // Reset confirm state when mouse leaves the card
   const handleMouseLeave = useCallback(() => {
@@ -319,7 +336,12 @@ export function GalleryPage({
       // Second click - actually delete
       setIsDeleting(true);
       try {
+        const filePath = selectedImage.file_path;
         await deleteImage(selectedImage.id, true);
+        // Clean up references in OptionsPanel
+        if (filePath) {
+          onFileDeleted?.(filePath);
+        }
         toast.success("图片已删除");
         setSelectedImage(null);
         setFullImage(null);
@@ -333,7 +355,7 @@ export function GalleryPage({
       // First click - enter confirm state
       setModalConfirmDelete(true);
     }
-  }, [selectedImage, modalConfirmDelete, deleteImage]);
+  }, [selectedImage, modalConfirmDelete, deleteImage, onFileDeleted]);
 
   // Delete all images in a bundle
   const handleConfirmBundleDelete = useCallback(async () => {
@@ -341,9 +363,17 @@ export function GalleryPage({
 
     setIsDeleting(true);
     try {
+      // Collect file paths before deletion
+      const filePaths = bundleToDelete.images
+        .map(img => img.file_path)
+        .filter((path): path is string => !!path);
       // Delete all images in the bundle
       for (const image of bundleToDelete.images) {
         await deleteImage(image.id, true);
+      }
+      // Clean up references in OptionsPanel
+      for (const filePath of filePaths) {
+        onFileDeleted?.(filePath);
       }
       toast.success(`已删除 ${bundleToDelete.images.length} 张图片`);
       // Close preview if viewing this bundle
@@ -356,7 +386,7 @@ export function GalleryPage({
       setIsDeleting(false);
       setBundleToDelete(null);
     }
-  }, [bundleToDelete, deleteImage, previewBundle]);
+  }, [bundleToDelete, deleteImage, previewBundle, onFileDeleted]);
 
   const closeModal = useCallback(() => {
     setSelectedImage(null);

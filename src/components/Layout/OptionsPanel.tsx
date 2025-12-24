@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, forwardRef, useImperativeHandle } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,7 +19,7 @@ import {
 import { ImageDropZone } from "../Generation/ImageDropZone";
 import { useImageGeneration, useSettings } from "../../hooks";
 import { ASPECT_RATIO_OPTIONS } from "../../types";
-import type { ReferenceImage, GenerateImageRequestWithPaths, GenerateVideoRequestWithPaths, VideoGenerationType } from "../../types";
+import type { ReferenceImage, GenerateImageRequestWithPaths, GenerateVideoRequestWithPaths, VideoGenerationType, OptionsPanelHandle } from "../../types";
 import {
   ChevronUp,
   ChevronDown,
@@ -69,7 +69,10 @@ interface OptionsPanelProps {
   onStartVideoTask?: (request: GenerateVideoRequestWithPaths) => void;
 }
 
-export function OptionsPanel({ projectId, onStartImageTask, onStartVideoTask }: OptionsPanelProps) {
+export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(function OptionsPanel(
+  { projectId, onStartImageTask, onStartVideoTask },
+  ref
+) {
   const { readImageFile } = useImageGeneration(); // Still needed for ImageDropZone
   const { config, loadSettings } = useSettings();
 
@@ -102,6 +105,20 @@ export function OptionsPanel({ projectId, onStartImageTask, onStartVideoTask }: 
       label: String(i + 2),
     })),
   ];
+
+  // Expose cleanup method for deleted files
+  useImperativeHandle(ref, () => ({
+    cleanupDeletedFile: (filePath: string) => {
+      // Clean up image generation references
+      setReferenceImages(prev => prev.filter(img => img.file_path !== filePath));
+      // Clean up video first frame
+      setVideoFirstFrame(prev => prev?.file_path === filePath ? null : prev);
+      // Clean up video last frame
+      setVideoLastFrame(prev => prev?.file_path === filePath ? null : prev);
+      // Clean up video reference images
+      setVideoRefImages(prev => prev.filter(img => img.file_path !== filePath));
+    }
+  }), []);
 
   useEffect(() => {
     loadSettings().then((cfg) => {
@@ -565,4 +582,4 @@ export function OptionsPanel({ projectId, onStartImageTask, onStartVideoTask }: 
       </Collapsible>
     </div>
   );
-}
+});
