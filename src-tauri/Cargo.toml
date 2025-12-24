@@ -36,8 +36,8 @@ reqwest = { version = "0.12", features = [
 image = { version = "0.25", features = ["jpeg", "png", "webp", "gif"] }
 base64 = "0.22"
 
-# Video processing
-ffmpeg-next = "8"
+# Video processing (static linking - builds FFmpeg from source for distribution)
+ffmpeg-next = { version = "8", features = ["static", "build"] }
 
 # Encryption
 aes-gcm = "0.10"

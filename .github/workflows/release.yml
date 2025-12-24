@@ -56,34 +56,32 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libavdevice-dev pkg-config
+            nasm pkg-config clang
 
-      - name: Install FFmpeg (macOS)
+      - name: Install build tools (macOS)
         if: startsWith(matrix.platform, 'macos')
         run: |
-          brew install ffmpeg pkg-config
+          brew install nasm pkg-config
 
-      - name: Install FFmpeg (Windows)
+      - name: Setup MSYS2 (Windows)
         if: matrix.platform == 'windows-latest'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-clang
+
+      - name: Set Windows build environment
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
         run: |
           $VCINSTALLDIR = $(& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath)
           Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
-          Invoke-WebRequest "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z" -OutFile ffmpeg.7z
-          7z x ffmpeg.7z
-          mkdir ffmpeg-install -Force
-          mv ffmpeg-*-full_build-shared/* ffmpeg-install/
-          $ffmpegDir = "${pwd}\ffmpeg-install"
-          Add-Content $env:GITHUB_ENV "FFMPEG_DIR=${ffmpegDir}`n"
-          Add-Content $env:GITHUB_PATH "${ffmpegDir}\bin`n"
-          # Disable pkg-config for ffmpeg-sys-next on Windows
-          Add-Content $env:GITHUB_ENV "LIBAVUTIL_NO_PKG_CONFIG=1`n"
-          Add-Content $env:GITHUB_ENV "LIBAVCODEC_NO_PKG_CONFIG=1`n"
-          Add-Content $env:GITHUB_ENV "LIBAVFORMAT_NO_PKG_CONFIG=1`n"
-          Add-Content $env:GITHUB_ENV "LIBAVFILTER_NO_PKG_CONFIG=1`n"
-          Add-Content $env:GITHUB_ENV "LIBAVDEVICE_NO_PKG_CONFIG=1`n"
-          Add-Content $env:GITHUB_ENV "LIBSWSCALE_NO_PKG_CONFIG=1`n"
-          Add-Content $env:GITHUB_ENV "LIBSWRESAMPLE_NO_PKG_CONFIG=1`n"
-        shell: pwsh
+          # Add MSYS2 to PATH for nasm
+          Add-Content $env:GITHUB_PATH "C:\msys64\ucrt64\bin`n"
 
       - name: Setup Node
         uses: actions/setup-node@v4
