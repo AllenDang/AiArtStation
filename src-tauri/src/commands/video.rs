@@ -677,21 +677,17 @@ fn extract_frame_at_position(video_path: &str, output_path: &str, position: Fram
 /// Generate a base64 thumbnail from an image file using image crate
 fn generate_thumbnail_from_image(image_path: &str) -> Result<String, String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
-    use image::GenericImageView;
 
     let img = image::open(image_path)
         .map_err(|e| format!("Failed to open image: {}", e))?;
 
-    // Calculate thumbnail size (max width 200, maintain aspect ratio)
-    let (width, height) = img.dimensions();
-    let thumb_width = 200u32;
-    let thumb_height = (height as f32 * thumb_width as f32 / width as f32) as u32;
+    // Create thumbnail (max 200x200, maintains aspect ratio)
+    let thumbnail = img.thumbnail(200, 200);
 
-    let thumbnail = img.thumbnail(thumb_width, thumb_height);
-
-    // Encode as JPEG to bytes
+    // Encode as JPEG with quality 80 (same as image thumbnails)
     let mut buffer = std::io::Cursor::new(Vec::new());
-    thumbnail.write_to(&mut buffer, image::ImageFormat::Jpeg)
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 80);
+    thumbnail.write_with_encoder(encoder)
         .map_err(|e| format!("Failed to encode thumbnail: {}", e))?;
 
     let encoded = STANDARD.encode(buffer.into_inner());
