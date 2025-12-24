@@ -114,13 +114,19 @@ jobs:
         shell: cmd
         run: |
           @echo off
-          REM Setup MSVC environment
+          REM Setup MSVC environment first (sets up MSVC link.exe in PATH)
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
 
-          REM Prepend MSYS2 to PATH for sh.exe and make
+          REM Rename MSYS2's link.exe to avoid conflict with MSVC's link.exe
+          REM MSYS2's link.exe is for Unix hardlinks, MSVC's link.exe is the linker
+          if exist "C:\msys64\usr\bin\link.exe" (
+            rename "C:\msys64\usr\bin\link.exe" "link_msys2.exe"
+          )
+
+          REM Now prepend MSYS2 to PATH for sh.exe and make
           set "PATH=C:\msys64\usr\bin;%PATH%"
 
-          REM Set compilers
+          REM Set compilers for FFmpeg
           set CC=cl
           set CXX=cl
 
@@ -128,6 +134,7 @@ jobs:
           echo === Tool locations ===
           where sh
           where make
+          where link
           where cl
           echo =====================
 
