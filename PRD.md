@@ -665,3 +665,275 @@ Users must create a project before generating. On first launch or when no projec
 - API errors: Display user-friendly messages with error codes
 - Content moderation: Handle rejected prompts gracefully
 - Rate limiting: Queue requests and show estimated wait time
+
+---
+
+## Phase 4: Image Painter & Mask Editor
+
+### 4.1 Overview
+
+Enable artists to paint masks directly on reference images for inpainting workflows. When a user clicks on a reference image in the reference zone, a painter dialog opens where they can draw masks to indicate regions for AI modification.
+
+**Use Cases**:
+- Highlight specific areas for AI to modify/regenerate
+- Mark regions to preserve or ignore during transformation
+- Create precise selection masks for targeted editing
+- Guide AI attention to specific parts of the image
+
+### 4.2 Core Features
+
+#### Painter Dialog
+
+**Trigger**: Click on any image in the reference zone (ImageDropZone)
+
+**UI Components**:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Image Painter                                                    [×] Close │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                                                                     │    │
+│  │                                                                     │    │
+│  │                    [Full Resolution Image]                          │    │
+│  │                    with mask overlay                                │    │
+│  │                                                                     │    │
+│  │                                                                     │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Tools: [🖌 Brush] [⬜ Eraser] [↩ Undo] [↪ Redo] [🗑 Clear]                  │
+│  Brush Size: [━━━━━●━━━━━] 20px                                            │
+│  Opacity: [━━━━━━━━●━━] 80%                                                │
+│  Color: [■ Red] [■ Green] [■ Blue] [■ Custom]                              │
+│                                                                             │
+│                                         [Cancel]  [Save Mask]              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Image Loading
+- **Source**: Load full-resolution image from file system (not thumbnail)
+- **Path**: Use `file_path` from `ReferenceImage` object
+- **Backend Command**: `read_image_raw(path)` returns full image as Base64
+- **Display**: Render at actual size, centered in canvas
+
+#### Navigation Controls
+| Control | Action |
+|---------|--------|
+| **Mouse Wheel** | Zoom in/out at cursor position |
+| **Middle Mouse Button (hold)** | Pan/move the image |
+| **Left Mouse Button (drag)** | Draw mask stroke |
+
+**Zoom Behavior**:
+- Zoom range: 10% - 500%
+- Zoom increments: 10% per wheel tick
+- Zoom anchor: Cursor position (zoom toward/away from cursor)
+- Display zoom level indicator (e.g., "150%")
+
+**Pan Behavior**:
+- Smooth panning with middle mouse drag
+- Cursor changes to grab/move icon
+- Pan bounds: Keep at least 10% of image visible
+
+#### Painting Tools
+
+**Brush Tool**:
+- Round brush with adjustable size (1-200px)
+- Adjustable opacity (10%-100%)
+- Smooth stroke rendering with interpolation
+- Anti-aliased edges
+
+**Eraser Tool**:
+- Same size/opacity controls as brush
+- Removes painted mask pixels
+
+**Color Options**:
+- Preset colors: Red, Green, Blue, Yellow, White
+- Custom color picker
+- Colors are for visual distinction only (masks are converted to binary for AI)
+
+**History**:
+- Undo/Redo stack (50 levels)
+- Keyboard shortcuts: Ctrl/Cmd+Z (undo), Ctrl/Cmd+Shift+Z (redo)
+
+**Clear**:
+- Clear all mask strokes
+- Confirmation prompt if mask has content
+
+### 4.3 Mask Data Management
+
+#### In-Memory Storage
+
+Masks are stored in React state, associated with reference images:
+
+```typescript
+interface MaskData {
+  image_id: string;              // Reference image ID or file path
+  image_path: string;            // Original image file path
+  mask_base64: string;           // PNG with transparency (mask pixels only)
+  mask_width: number;            // Same as original image width
+  mask_height: number;           // Same as original image height
+  thumbnail_with_mask: string;   // Composited thumbnail (original + mask overlay) for display
+  created_at: number;            // Timestamp
+  updated_at: number;            // Last modified timestamp
+}
+
+// State in OptionsPanel or parent component
+const [imageMasks, setImageMasks] = useState<Map<string, MaskData>>(new Map());
+```
+
+#### Thumbnail Compositing
+When mask is saved:
+1. Scale mask down to thumbnail size (matching reference image thumbnail)
+2. Composite mask onto original thumbnail with semi-transparency
+3. Store as `thumbnail_with_mask` in MaskData
+4. ImageDropZone displays `thumbnail_with_mask` instead of original thumbnail when mask exists
+
+#### Mask Image Format
+- **Format**: PNG with alpha channel
+- **Content**: Only mask strokes, transparent background
+- **Size**: Same dimensions as original image
+- **Color**: Mask color preserved for visual reference
+- **Storage**: In-memory only (not saved to disk)
+
+#### Cleanup Rules
+| Event | Action |
+|-------|--------|
+| Remove single reference image | Delete associated mask from state |
+| Clear all reference images | Clear all masks from state |
+| Close/switch project | Clear all masks |
+| Dialog cancel without save | Discard unsaved changes |
+
+### 4.4 Generation Integration
+
+#### On Generate Button Click
+
+1. **Check for masks**: Loop through reference images
+2. **Combine mask with image** (in Rust backend):
+   ```
+   invoke('combine_image_with_mask', {
+     image_path: string,
+     mask_base64: string,
+     combine_mode: 'overlay' | 'alpha'
+   }) -> combined_base64: string
+   ```
+3. **Replace reference image Base64**: Use combined image for API request
+4. **Send to AI**: Combined image sent as reference
+
+#### Combine Modes
+- **Overlay**: Blend mask color onto image at mask opacity
+- **Alpha**: Use mask as alpha channel (transparent = original, opaque = masked)
+
+The combine mode depends on the AI API's inpainting requirements.
+
+### 4.5 Technical Implementation
+
+#### Frontend Components
+
+**New Files**:
+```
+src/components/Painter/
+├── PainterDialog.tsx       # Main dialog component
+├── PainterCanvas.tsx       # Canvas with zoom/pan/draw
+├── PainterToolbar.tsx      # Tool selection, size, color
+├── PainterHistory.tsx      # Undo/redo management
+└── usePainterState.ts      # Hook for painter state
+```
+
+**PainterCanvas Features**:
+- HTML5 Canvas for drawing
+- Two-layer approach:
+  - Background layer: Original image
+  - Foreground layer: Mask strokes (transparent PNG)
+- Transform matrix for zoom/pan
+- Event handlers for mouse wheel, middle click, left click
+
+#### Backend Commands (Rust)
+
+**New Commands**:
+```rust
+// Read full image for painter
+#[tauri::command]
+async fn read_image_for_painter(path: String) -> Result<ImageData, String>;
+
+// Combine image with mask before generation
+#[tauri::command]
+async fn combine_image_with_mask(
+    image_path: String,
+    mask_base64: String,
+    combine_mode: String
+) -> Result<String, String>;  // Returns combined Base64
+```
+
+**ImageData struct**:
+```rust
+struct ImageData {
+    base64: String,
+    width: u32,
+    height: u32,
+    format: String,  // "jpeg", "png", etc.
+}
+```
+
+#### State Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         OptionsPanel                                │
+│  ┌───────────────────────────────────────────────────────────┐     │
+│  │  imageMasks: Map<string, MaskData>                        │     │
+│  │                                                           │     │
+│  │  ImageDropZone ──[click image]──> PainterDialog           │     │
+│  │       │                                │                  │     │
+│  │       │                                ▼                  │     │
+│  │       │                      [Edit/Create Mask]           │     │
+│  │       │                                │                  │     │
+│  │       │                                ▼                  │     │
+│  │       │<────────[Save Mask]───── MaskData                 │     │
+│  │       │                                                   │     │
+│  │  [Generate] ─────────────────────────────────────────>    │     │
+│  │       │                                                   │     │
+│  │       ▼                                                   │     │
+│  │  For each ref image with mask:                            │     │
+│  │    invoke('combine_image_with_mask')                      │     │
+│  │       │                                                   │     │
+│  │       ▼                                                   │     │
+│  │  Send combined images to AI API                           │     │
+│  └───────────────────────────────────────────────────────────┘     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.6 UI/UX Considerations
+
+#### Visual Indicators in Reference Zone
+- **Mask overlay on thumbnail**: After saving mask, composite the mask onto the thumbnail image directly
+  - Thumbnail shows original image with semi-transparent mask overlay
+  - User can immediately see which areas are masked
+  - No need for abstract badge icons - the mask itself is the indicator
+- Tooltip showing "Click to edit mask"
+
+#### Painter Dialog UX
+- Large canvas area (80% of dialog)
+- Floating toolbar (draggable)
+- Status bar showing: zoom level, cursor position, brush size
+- Keyboard shortcuts displayed in tooltips
+
+#### Keyboard Shortcuts
+| Shortcut | Action |
+|----------|--------|
+| `B` | Select Brush tool |
+| `E` | Select Eraser tool |
+| `[` / `]` | Decrease/Increase brush size |
+| `Ctrl/Cmd + Z` | Undo |
+| `Ctrl/Cmd + Shift + Z` | Redo |
+| `Ctrl/Cmd + 0` | Reset zoom to fit |
+| `Ctrl/Cmd + 1` | Zoom to 100% |
+| `Space + Drag` | Pan (alternative to middle mouse) |
+| `Escape` | Close dialog |
+
+### 4.7 Future Enhancements
+
+- **Multiple mask layers**: Different colors for different edit intentions
+- **Mask presets**: Save common mask patterns
+- **Selection tools**: Rectangle, ellipse, lasso for precise selections
+- **Feathering**: Soft edges on mask boundaries
+- **Invert mask**: Quick toggle to invert selection
+- **Auto-detect edges**: AI-assisted edge detection for easier masking

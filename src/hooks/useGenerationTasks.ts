@@ -31,20 +31,43 @@ export function useGenerationTasks(options: UseGenerationTasksOptions = {}) {
     );
   }, []);
 
-  // Helper to read full-resolution image from file path
+  // Helper to read full-resolution image from file path and optionally combine with mask
   const readImageFromPath = async (input: ReferenceImageInput): Promise<string> => {
+    let imageBase64: string;
+
     if (input.file_path) {
       try {
         const result = await invoke<ImageFileInfo>("read_image_file", { path: input.file_path });
-        return result.base64;
+        imageBase64 = result.base64;
       } catch (e) {
         console.error("Failed to read image file:", e);
         // Fallback to base64 if available
-        if (input.base64) return input.base64;
-        throw e;
+        if (input.base64) {
+          imageBase64 = input.base64;
+        } else {
+          throw e;
+        }
+      }
+    } else {
+      imageBase64 = input.base64 || "";
+    }
+
+    // Combine with mask if present (for inpainting/editing workflows)
+    if (input.mask_base64 && input.file_path) {
+      try {
+        const combinedBase64 = await invoke<string>("combine_image_with_mask", {
+          imagePath: input.file_path,
+          maskBase64: input.mask_base64,
+          combineMode: "overlay",
+        });
+        return combinedBase64;
+      } catch (e) {
+        console.error("Failed to combine mask:", e);
+        // Fall back to image without mask
       }
     }
-    return input.base64 || "";
+
+    return imageBase64;
   };
 
   // Start a new image generation task

@@ -177,6 +177,23 @@ export function useGallery() {
     []
   );
 
+  // Combine image with mask for inpainting workflows
+  const combineImageWithMask = useCallback(
+    async (imagePath: string, maskBase64: string, combineMode: "overlay" | "alpha" = "overlay"): Promise<string> => {
+      try {
+        const result = await invoke<string>("combine_image_with_mask", {
+          imagePath,
+          maskBase64,
+          combineMode,
+        });
+        return result;
+      } catch (e) {
+        throw new Error(`Failed to combine image with mask: ${e}`);
+      }
+    },
+    []
+  );
+
   return {
     images,
     total,
@@ -193,5 +210,6 @@ export function useGallery() {
     removeImageTag,
     getAssetTypeCounts,
     loadGalleryByAssetType,
+    combineImageWithMask,
   };
 }

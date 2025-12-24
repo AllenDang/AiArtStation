@@ -12,7 +12,7 @@ use commands::{
     generate_image, prepare_reference_image,
     // Gallery
     get_gallery, search_gallery, get_image_detail, delete_gallery_image, regenerate_thumbnails,
-    add_image_tag, remove_image_tag, get_asset_type_counts, get_gallery_by_asset_type,
+    add_image_tag, remove_image_tag, get_asset_type_counts, get_gallery_by_asset_type, combine_image_with_mask,
     // Files
     read_image_file, read_image_raw, open_folder, open_file, reveal_file, path_exists, ensure_directory, get_file_info,
     // Projects
@@ -95,6 +95,7 @@ pub fn run() {
             remove_image_tag,
             get_asset_type_counts,
             get_gallery_by_asset_type,
+            combine_image_with_mask,
             // Files
             read_image_file,
             read_image_raw,

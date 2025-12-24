@@ -154,6 +154,7 @@ export interface SaveConfigRequest {
 export interface ReferenceImageInput {
   base64?: string;      // Pre-encoded base64
   file_path?: string;   // Path to read full-res image from
+  mask_base64?: string; // Optional mask to combine with image (processed in background)
 }
 
 // Image Generation
@@ -258,6 +259,27 @@ export interface ReferenceImage {
   original_width: number;
   original_height: number;
   file_path?: string;
+}
+
+// Mask data for image painter feature
+export interface MaskData {
+  image_id: string;              // Reference image ID (matches ReferenceImage.id)
+  image_path: string;            // Original image file path
+  mask_base64: string;           // PNG with transparency (mask pixels only)
+  mask_width: number;            // Same as original image width
+  mask_height: number;           // Same as original image height
+  thumbnail_with_mask: string;   // Composited thumbnail for display in reference zone
+  created_at: number;            // Timestamp
+  updated_at: number;            // Last modified timestamp
+}
+
+// Painter tool types
+export type PainterTool = "brush" | "eraser";
+
+// Painter state for undo/redo
+export interface PainterHistoryEntry {
+  mask_data: ImageData;  // Canvas ImageData snapshot
+  timestamp: number;
 }
 
 // Generation Task Types

@@ -9,7 +9,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import type { ReferenceImage, VideoDragData, DropZoneType } from "../../types";
+import type { ReferenceImage, VideoDragData, DropZoneType, MaskData } from "../../types";
 import { ImagePlus, X, Plus, Loader2, Video } from "lucide-react";
 
 interface ImageDropZoneProps {
@@ -31,6 +31,9 @@ interface ImageDropZoneProps {
   dropZoneType?: DropZoneType;
   // Callback for coordinated video frame drops (first-last mode)
   onVideoFrameDrop?: (first?: ReferenceImage, last?: ReferenceImage) => void;
+  // Mask support for painter feature
+  imageMasks?: Map<string, MaskData>;
+  onImageClick?: (image: ReferenceImage) => void;
 }
 
 export function ImageDropZone({
@@ -43,11 +46,19 @@ export function ImageDropZone({
   singleImageFill = false,
   dropZoneType = "image-ref",
   onVideoFrameDrop,
+  imageMasks,
+  onImageClick,
 }: ImageDropZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   // State for video frame selection menu
   const [pendingVideoData, setPendingVideoData] = useState<VideoDragData | null>(null);
+
+  // Get display image - use mask thumbnail if exists, otherwise original thumbnail
+  const getDisplayImage = useCallback((img: ReferenceImage): string => {
+    const mask = imageMasks?.get(img.id);
+    return mask?.thumbnail_with_mask || img.base64;
+  }, [imageMasks]);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTriggerRef = useRef<HTMLDivElement>(null);
 
@@ -408,9 +419,14 @@ export function ImageDropZone({
           // Single image fill mode - image fills the container
           <div className="relative group h-full">
             <img
-              src={images[0].base64}
+              src={getDisplayImage(images[0])}
               alt="Reference"
-              className="w-full h-full object-cover rounded-md"
+              className={cn(
+                "w-full h-full object-cover rounded-md",
+                onImageClick && "cursor-pointer"
+              )}
+              onClick={() => onImageClick?.(images[0])}
+              title={onImageClick ? "Click to edit mask" : undefined}
             />
             {images[0].was_resized && (
               <div className="absolute bottom-1 left-1 bg-yellow-500/90 text-black text-[10px] px-1 rounded font-medium">
@@ -418,7 +434,10 @@ export function ImageDropZone({
               </div>
             )}
             <button
-              onClick={() => handleRemoveImage(images[0].id)}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleRemoveImage(images[0].id);
+              }}
               className="absolute top-1 right-1 bg-destructive text-destructive-foreground p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/90"
             >
               <X className="w-3 h-3" />
@@ -429,9 +448,14 @@ export function ImageDropZone({
             {images.map((img) => (
               <div key={img.id} className="relative group">
                 <img
-                  src={img.base64}
+                  src={getDisplayImage(img)}
                   alt="Reference"
-                  className="w-full aspect-square object-cover rounded-md"
+                  className={cn(
+                    "w-full aspect-square object-cover rounded-md",
+                    onImageClick && "cursor-pointer"
+                  )}
+                  onClick={() => onImageClick?.(img)}
+                  title={onImageClick ? "Click to edit mask" : undefined}
                 />
                 {img.was_resized && !compact && (
                   <div className="absolute bottom-1 left-1 bg-yellow-500/90 text-black text-[10px] px-1 rounded font-medium">
@@ -439,7 +463,10 @@ export function ImageDropZone({
                   </div>
                 )}
                 <button
-                  onClick={() => handleRemoveImage(img.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleRemoveImage(img.id);
+                  }}
                   className="absolute top-1 right-1 bg-destructive text-destructive-foreground p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/90"
                 >
                   <X className="w-3 h-3" />

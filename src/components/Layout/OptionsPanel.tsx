@@ -17,9 +17,10 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { ImageDropZone } from "../Generation/ImageDropZone";
-import { useImageGeneration, useSettings } from "../../hooks";
+import { PainterDialog } from "../Painter";
+import { useImageGeneration, useSettings, useGallery } from "../../hooks";
 import { ASPECT_RATIO_OPTIONS } from "../../types";
-import type { ReferenceImage, GenerateImageRequestWithPaths, GenerateVideoRequestWithPaths, VideoGenerationType, OptionsPanelHandle } from "../../types";
+import type { ReferenceImage, GenerateImageRequestWithPaths, GenerateVideoRequestWithPaths, VideoGenerationType, OptionsPanelHandle, MaskData } from "../../types";
 import {
   ChevronUp,
   ChevronDown,
@@ -75,6 +76,7 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
 ) {
   const { readImageFile } = useImageGeneration(); // Still needed for ImageDropZone
   const { config, loadSettings } = useSettings();
+  const { readImageRaw } = useGallery(); // For reading full-res images in painter
 
   const [isOpen, setIsOpen] = useState(true);
   const [mode, setMode] = useState<GenerationMode>("image");
@@ -87,6 +89,10 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
   const [sequentialCount, setSequentialCount] = useState<string>("auto");
   const [optimizePrompt, setOptimizePrompt] = useState(false);
   const [optimizePromptMode, setOptimizePromptMode] = useState<"standard" | "fast">("standard");
+
+  // Mask state for painter feature
+  const [imageMasks, setImageMasks] = useState<Map<string, MaskData>>(new Map());
+  const [painterImage, setPainterImage] = useState<ReferenceImage | null>(null);
 
   // Video generation state
   const [videoGenerationType, setVideoGenerationType] = useState<VideoGenerationType>("text-to-video");
@@ -109,8 +115,20 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
   // Expose cleanup method for deleted files
   useImperativeHandle(ref, () => ({
     cleanupDeletedFile: (filePath: string) => {
-      // Clean up image generation references
-      setReferenceImages(prev => prev.filter(img => img.file_path !== filePath));
+      // Clean up image generation references and their masks
+      setReferenceImages(prev => {
+        const filtered = prev.filter(img => img.file_path !== filePath);
+        // Also clean up masks for removed images
+        const removedIds = prev.filter(img => img.file_path === filePath).map(img => img.id);
+        if (removedIds.length > 0) {
+          setImageMasks(prevMasks => {
+            const newMasks = new Map(prevMasks);
+            removedIds.forEach(id => newMasks.delete(id));
+            return newMasks;
+          });
+        }
+        return filtered;
+      });
       // Clean up video first frame
       setVideoFirstFrame(prev => prev?.file_path === filePath ? null : prev);
       // Clean up video last frame
@@ -134,7 +152,7 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
     return { base64: img.base64, file_path: img.file_path };
   };
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     if (!prompt.trim()) {
       toast.error("请输入提示词");
       return;
@@ -157,14 +175,21 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
         finalPrompt = `Generate exactly ${specificCount} different images: ${finalPrompt}`;
       }
 
+      // Process reference images - pass mask data for background processing
+      const processedInputs = referenceImages.map((img) => {
+        const mask = imageMasks.get(img.id);
+        return {
+          base64: img.base64,
+          file_path: img.file_path,
+          mask_base64: mask?.mask_base64, // Mask will be combined in background task
+        };
+      });
+
       // Pass file paths - hooks will read files in background
       const request: GenerateImageRequestWithPaths = {
         project_id: projectId,
         prompt: finalPrompt,
-        reference_image_inputs: referenceImages.map(img => ({
-          base64: img.base64,
-          file_path: img.file_path,
-        })),
+        reference_image_inputs: processedInputs,
         size: pixelSize,
         aspect_ratio: aspectRatio,
         watermark: false,
@@ -235,6 +260,45 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
     },
     [readImageFile]
   );
+
+  // Handle clicking on an image to open painter
+  const handleImageClick = useCallback((image: ReferenceImage) => {
+    setPainterImage(image);
+  }, []);
+
+  // Handle saving mask from painter
+  const handleSaveMask = useCallback((maskData: MaskData) => {
+    setImageMasks(prev => {
+      const newMasks = new Map(prev);
+      newMasks.set(maskData.image_id, maskData);
+      return newMasks;
+    });
+  }, []);
+
+  // Read full-resolution image for painter
+  const handleReadFullImage = useCallback(async (path: string): Promise<string> => {
+    return readImageRaw(path);
+  }, [readImageRaw]);
+
+  // Wrapper for setReferenceImages that cleans up masks for removed images
+  const handleReferenceImagesChange = useCallback((newImages: ReferenceImage[]) => {
+    setReferenceImages(prev => {
+      // Find removed image IDs
+      const newIds = new Set(newImages.map(img => img.id));
+      const removedIds = prev.filter(img => !newIds.has(img.id)).map(img => img.id);
+
+      // Clean up masks for removed images
+      if (removedIds.length > 0) {
+        setImageMasks(prevMasks => {
+          const newMasks = new Map(prevMasks);
+          removedIds.forEach(id => newMasks.delete(id));
+          return newMasks;
+        });
+      }
+
+      return newImages;
+    });
+  }, []);
 
   // Handle single image for video frames
   const handleVideoFrameChange = useCallback(
@@ -315,10 +379,12 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
                   <div className="w-64 flex-shrink-0">
                     <ImageDropZone
                       images={referenceImages}
-                      onImagesChange={setReferenceImages}
+                      onImagesChange={handleReferenceImagesChange}
                       onReadImage={handleReadImage}
                       maxImages={14}
                       dropZoneType="image-ref"
+                      imageMasks={imageMasks}
+                      onImageClick={handleImageClick}
                     />
                   </div>
                 </div>
@@ -580,6 +646,18 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
           </div>
         </CollapsibleContent>
       </Collapsible>
+
+      {/* Painter Dialog */}
+      {painterImage && (
+        <PainterDialog
+          open={!!painterImage}
+          onOpenChange={(open) => !open && setPainterImage(null)}
+          image={painterImage}
+          existingMask={imageMasks.get(painterImage.id) ?? null}
+          onSave={handleSaveMask}
+          onReadFullImage={handleReadFullImage}
+        />
+      )}
     </div>
   );
 });

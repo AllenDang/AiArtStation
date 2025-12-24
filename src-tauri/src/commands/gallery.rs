@@ -278,3 +278,104 @@ fn load_thumbnail_fallback(file_path: &str) -> Result<String, String> {
 
     image_to_base64(&buffer.into_inner()).map_err(|e| e.to_string())
 }
+
+/// Combine an image with a mask overlay for inpainting workflows
+/// Returns the combined image as base64
+#[tauri::command]
+pub async fn combine_image_with_mask(
+    image_path: String,
+    mask_base64: String,
+    combine_mode: String,
+) -> Result<String, String> {
+    use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
+
+    // Load original image
+    let image_data = std::fs::read(&image_path).map_err(|e| format!("Failed to read image: {}", e))?;
+    let original = image::load_from_memory(&image_data).map_err(|e| format!("Failed to decode image: {}", e))?;
+
+    // Decode mask from base64
+    let mask_data = decode_base64_image(&mask_base64)?;
+    let mask = image::load_from_memory(&mask_data).map_err(|e| format!("Failed to decode mask: {}", e))?;
+
+    // Resize mask to match original if needed
+    let mask = if mask.dimensions() != original.dimensions() {
+        mask.resize_exact(
+            original.width(),
+            original.height(),
+            image::imageops::FilterType::Lanczos3,
+        )
+    } else {
+        mask
+    };
+
+    // Convert both to RGBA
+    let original_rgba = original.to_rgba8();
+    let mask_rgba = mask.to_rgba8();
+
+    // Combine based on mode
+    let combined = match combine_mode.as_str() {
+        "overlay" => {
+            // Overlay mode: blend mask color onto image at mask opacity
+            let mut result = original_rgba.clone();
+            for (x, y, mask_pixel) in mask_rgba.enumerate_pixels() {
+                if mask_pixel[3] > 0 {
+                    // Mask has content at this pixel
+                    let orig_pixel = result.get_pixel(x, y);
+                    let alpha = mask_pixel[3] as f32 / 255.0;
+                    let blended = Rgba([
+                        blend_channel(orig_pixel[0], mask_pixel[0], alpha),
+                        blend_channel(orig_pixel[1], mask_pixel[1], alpha),
+                        blend_channel(orig_pixel[2], mask_pixel[2], alpha),
+                        255,
+                    ]);
+                    result.put_pixel(x, y, blended);
+                }
+            }
+            result
+        }
+        "alpha" => {
+            // Alpha mode: use mask as alpha channel (for inpainting APIs)
+            // White = masked (to be inpainted), Black = keep original
+            let mut result = RgbaImage::new(original.width(), original.height());
+            for (x, y, orig_pixel) in original_rgba.enumerate_pixels() {
+                let mask_pixel = mask_rgba.get_pixel(x, y);
+                // If mask has content, mark as masked (white with full alpha)
+                let alpha = if mask_pixel[3] > 0 { mask_pixel[3] } else { 0 };
+                result.put_pixel(x, y, Rgba([orig_pixel[0], orig_pixel[1], orig_pixel[2], 255 - alpha]));
+            }
+            result
+        }
+        _ => {
+            return Err(format!("Unknown combine mode: {}", combine_mode));
+        }
+    };
+
+    // Encode result as PNG base64
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(combined)
+        .write_to(&mut buffer, image::ImageFormat::Png)
+        .map_err(|e| format!("Failed to encode result: {}", e))?;
+
+    image_to_base64(&buffer.into_inner()).map_err(|e| e.to_string())
+}
+
+/// Decode base64 image data (strips data URL prefix if present)
+fn decode_base64_image(base64_str: &str) -> Result<Vec<u8>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    // Strip data URL prefix if present
+    let data = if let Some(pos) = base64_str.find(",") {
+        &base64_str[pos + 1..]
+    } else {
+        base64_str
+    };
+
+    STANDARD.decode(data).map_err(|e| format!("Failed to decode base64: {}", e))
+}
+
+/// Blend two color channels using alpha
+fn blend_channel(orig: u8, mask: u8, alpha: f32) -> u8 {
+    let orig_f = orig as f32;
+    let mask_f = mask as f32;
+    ((orig_f * (1.0 - alpha)) + (mask_f * alpha)) as u8
+}
