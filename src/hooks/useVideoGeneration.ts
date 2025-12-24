@@ -176,6 +176,20 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
     }
   }, []);
 
+  const getVideosByAssetType = useCallback(async (projectId: string, assetType: string, page: number = 0, pageSize: number = 20) => {
+    try {
+      const response = await invoke<VideoGalleryResponse>("get_videos_by_asset_type", {
+        projectId,
+        assetType,
+        page,
+        pageSize,
+      });
+      return response;
+    } catch (e) {
+      throw new Error(`Failed to load videos by asset type: ${e}`);
+    }
+  }, []);
+
   const getVideoDetail = useCallback(async (id: string) => {
     try {
       const video = await invoke<Video | null>("get_video_detail", { id });
@@ -266,6 +280,7 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
     pollVideoTask,
     loadPendingVideos,
     getVideos,
+    getVideosByAssetType,
     getVideoDetail,
     deleteVideo,
     addVideoTag,

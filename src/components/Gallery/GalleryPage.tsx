@@ -105,7 +105,7 @@ export function GalleryPage({
     readImageRaw,
   } = useGallery();
   const { openFile, revealFile } = useFiles();
-  const { getVideos, deleteVideo: deleteVideoFromDb } = useVideoGeneration();
+  const { getVideos, getVideosByAssetType, deleteVideo: deleteVideoFromDb } = useVideoGeneration();
 
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -199,10 +199,12 @@ export function GalleryPage({
   }, [loadGallery, loadGalleryByAssetType, projectId, refreshTrigger, onRefreshComplete, selectedAssetType, filter]);
 
   // Load videos
-  const loadVideos = useCallback(async (page: number = 0) => {
+  const loadVideos = useCallback(async (page: number = 0, assetType?: string | null) => {
     setVideosLoading(true);
     try {
-      const response = await getVideos(projectId, page, 20);
+      const response = assetType
+        ? await getVideosByAssetType(projectId, assetType, page, 20)
+        : await getVideos(projectId, page, 20);
       if (page === 0) {
         setVideos(response.videos);
       } else {
@@ -214,22 +216,22 @@ export function GalleryPage({
     } finally {
       setVideosLoading(false);
     }
-  }, [getVideos, projectId]);
+  }, [getVideos, getVideosByAssetType, projectId]);
 
   useEffect(() => {
     if (filter === "images") return; // Don't load videos in images-only mode
-    loadVideos(0);
+    loadVideos(0, selectedAssetType);
     setVideoPage(0);
     if (filter === "videos") {
       onRefreshComplete?.();
     }
-  }, [filter, projectId, refreshTrigger, loadVideos, onRefreshComplete]);
+  }, [filter, projectId, refreshTrigger, loadVideos, onRefreshComplete, selectedAssetType]);
 
   const handleLoadMoreVideos = useCallback(async () => {
     const nextPage = videoPage + 1;
-    await loadVideos(nextPage);
+    await loadVideos(nextPage, selectedAssetType);
     setVideoPage(nextPage);
-  }, [videoPage, loadVideos]);
+  }, [videoPage, loadVideos, selectedAssetType]);
 
   const handleDeleteVideo = useCallback(async (id: string) => {
     // Find the video to get file paths before deletion

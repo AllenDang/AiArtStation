@@ -846,6 +846,31 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().context("Failed to get videos by project")
     }
 
+    pub fn get_videos_by_asset_type(&self, project_id: &str, asset_type: &str, limit: i64, offset: i64) -> Result<Vec<VideoRecord>> {
+        // SQLite JSON query: asset_types contains the given type
+        let pattern = format!("%\"{}%", asset_type);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
+             FROM videos
+             WHERE project_id = ?1 AND asset_types LIKE ?2
+             ORDER BY created_at DESC
+             LIMIT ?3 OFFSET ?4"
+        )?;
+
+        let rows = stmt.query_map(params![project_id, pattern, limit, offset], Self::map_video_row)?;
+        rows.collect::<Result<Vec<_>, _>>().context("Failed to get videos by asset type")
+    }
+
+    pub fn get_video_count_by_asset_type(&self, project_id: &str, asset_type: &str) -> Result<i64> {
+        let pattern = format!("%\"{}%", asset_type);
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM videos WHERE project_id = ?1 AND asset_types LIKE ?2",
+            params![project_id, pattern],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
     pub fn get_video_by_id(&self, id: &str) -> Result<Option<VideoRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types

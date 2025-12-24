@@ -331,6 +331,37 @@ pub async fn get_videos(
 }
 
 #[tauri::command]
+pub async fn get_videos_by_asset_type(
+    db_state: State<'_, DbState>,
+    project_id: String,
+    asset_type: String,
+    page: i64,
+    page_size: i64,
+) -> Result<VideoGalleryResponse, String> {
+    let offset = page * page_size;
+
+    let (videos, total) = {
+        let db = db_state.database.lock().map_err(|e| e.to_string())?;
+        let videos = db
+            .get_videos_by_asset_type(&project_id, &asset_type, page_size, offset)
+            .map_err(|e| e.to_string())?;
+        let total = db
+            .get_video_count_by_asset_type(&project_id, &asset_type)
+            .map_err(|e| e.to_string())?;
+        (videos, total)
+    };
+
+    let video_list: Vec<Video> = videos.into_iter().map(map_to_video).collect();
+    let has_more = (offset + page_size) < total;
+
+    Ok(VideoGalleryResponse {
+        videos: video_list,
+        total,
+        has_more,
+    })
+}
+
+#[tauri::command]
 pub async fn get_video_detail(
     db_state: State<'_, DbState>,
     id: String,
