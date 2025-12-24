@@ -86,26 +86,6 @@ jobs:
           # Set LIBCLANG_PATH for bindgen
           Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
 
-          # Add MSYS2 to PATH (prepend so sh.exe and make are found)
-          # Use MSYS shell which has better compatibility with configure scripts
-          Add-Content $env:GITHUB_PATH "C:\msys64\usr\bin`n"
-
-          # Verify tools are available
-          Write-Host "Checking for required tools..."
-
-      - name: Verify Windows build tools
-        if: matrix.platform == 'windows-latest'
-        shell: cmd
-        run: |
-          echo Checking sh...
-          where sh
-          echo Checking make...
-          where make
-          echo Checking nasm...
-          where nasm
-          echo Checking cl (MSVC compiler)...
-          where cl || echo "cl not in PATH yet (will be set by vcvars)"
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -133,9 +113,25 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: cmd
         run: |
+          @echo off
+          REM Setup MSVC environment
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+
+          REM Prepend MSYS2 to PATH for sh.exe and make
+          set "PATH=C:\msys64\usr\bin;%PATH%"
+
+          REM Set compilers
           set CC=cl
           set CXX=cl
+
+          REM Verify tools
+          echo === Tool locations ===
+          where sh
+          where make
+          where cl
+          echo =====================
+
+          REM Build
           bun run tauri build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
