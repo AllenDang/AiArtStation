@@ -63,18 +63,6 @@ jobs:
         run: |
           brew install nasm pkg-config
 
-      - name: Setup MSYS2 (Windows)
-        if: matrix.platform == 'windows-latest'
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MSYS
-          update: true
-          install: >-
-            make
-            diffutils
-            nasm
-            pkg-config
-
       - name: Setup Windows build environment
         if: matrix.platform == 'windows-latest'
         shell: pwsh
@@ -85,6 +73,9 @@ jobs:
 
           # Set LIBCLANG_PATH for bindgen
           Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
+
+          # Install make via chocolatey (Git Bash doesn't include make)
+          choco install make -y --no-progress
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -114,17 +105,18 @@ jobs:
         shell: cmd
         run: |
           @echo off
-          REM Setup MSVC environment first (sets up MSVC link.exe in PATH)
+          REM Setup MSVC environment first
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
 
-          REM Rename MSYS2's link.exe to avoid conflict with MSVC's link.exe
-          REM MSYS2's link.exe is for Unix hardlinks, MSVC's link.exe is the linker
-          if exist "C:\msys64\usr\bin\link.exe" (
-            rename "C:\msys64\usr\bin\link.exe" "link_msys2.exe"
+          REM Remove Git's link.exe from PATH to avoid conflict with MSVC's link.exe
+          REM Git's usr/bin has a Unix link command that conflicts with MSVC linker
+          if exist "C:\Program Files\Git\usr\bin\link.exe" (
+            rename "C:\Program Files\Git\usr\bin\link.exe" "link_git.exe"
           )
 
-          REM Now prepend MSYS2 to PATH for sh.exe and make
-          set "PATH=C:\msys64\usr\bin;%PATH%"
+          REM Use Git Bash's sh.exe (better Windows path handling than MSYS2)
+          REM Git is pre-installed on Windows runners
+          set "PATH=C:\Program Files\Git\bin;C:\Program Files\Git\usr\bin;%PATH%"
 
           REM Set compilers for FFmpeg
           set CC=cl
@@ -136,6 +128,9 @@ jobs:
           where make
           where link
           where cl
+          echo === Environment check ===
+          echo INCLUDE=%INCLUDE%
+          echo LIB=%LIB%
           echo =====================
 
           REM Build
