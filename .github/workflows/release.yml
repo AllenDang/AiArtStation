@@ -67,21 +67,44 @@ jobs:
         if: matrix.platform == 'windows-latest'
         uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64
+          msystem: MSYS
           update: true
           install: >-
-            base-devel
-            mingw-w64-ucrt-x86_64-nasm
-            mingw-w64-ucrt-x86_64-clang
+            make
+            diffutils
+            nasm
+            pkg-config
 
-      - name: Set Windows build environment
+      - name: Setup Windows build environment
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
+          # Get Visual Studio installation path
           $VCINSTALLDIR = $(& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath)
+          Write-Host "Visual Studio path: $VCINSTALLDIR"
+
+          # Set LIBCLANG_PATH for bindgen
           Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
-          # Add MSYS2 to PATH for nasm
-          Add-Content $env:GITHUB_PATH "C:\msys64\ucrt64\bin`n"
+
+          # Add MSYS2 to PATH (prepend so sh.exe and make are found)
+          # Use MSYS shell which has better compatibility with configure scripts
+          Add-Content $env:GITHUB_PATH "C:\msys64\usr\bin`n"
+
+          # Verify tools are available
+          Write-Host "Checking for required tools..."
+
+      - name: Verify Windows build tools
+        if: matrix.platform == 'windows-latest'
+        shell: cmd
+        run: |
+          echo Checking sh...
+          where sh
+          echo Checking make...
+          where make
+          echo Checking nasm...
+          where nasm
+          echo Checking cl (MSVC compiler)...
+          where cl || echo "cl not in PATH yet (will be set by vcvars)"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -106,10 +129,33 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
-      - name: Build the app
+      - name: Build the app (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          set CC=cl
+          set CXX=cl
+          bun run tauri build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the app (Unix)
+        if: matrix.platform != 'windows-latest'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
+
+      - name: Upload Windows artifacts
+        if: matrix.platform == 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
