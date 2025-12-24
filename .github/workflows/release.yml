@@ -74,8 +74,23 @@ jobs:
           # Set LIBCLANG_PATH for bindgen
           Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
 
-          # Install make via chocolatey (Git Bash doesn't include make)
-          choco install make -y --no-progress
+      - name: Install FFmpeg via vcpkg (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          # vcpkg is pre-installed on GitHub Windows runners
+          # Install FFmpeg with static libraries
+          vcpkg install ffmpeg:x64-windows-static
+
+          # Set VCPKG_ROOT for ffmpeg-sys-next to find it
+          Add-Content $env:GITHUB_ENV "VCPKG_ROOT=C:\vcpkg`n"
+          Add-Content $env:GITHUB_ENV "VCPKGRS_TRIPLET=x64-windows-static`n"
+
+          # Patch Cargo.toml to disable 'build' feature (use vcpkg instead of building from source)
+          $cargoToml = Get-Content src-tauri/Cargo.toml -Raw
+          $cargoToml = $cargoToml -replace 'ffmpeg-next = \{ version = "8", features = \["static", "build"\] \}', 'ffmpeg-next = { version = "8", features = ["static"] }'
+          Set-Content src-tauri/Cargo.toml -Value $cargoToml
+          Write-Host "Patched Cargo.toml to use vcpkg instead of building FFmpeg from source"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -105,35 +120,10 @@ jobs:
         shell: cmd
         run: |
           @echo off
-          REM Setup MSVC environment first
+          REM Setup MSVC environment
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
 
-          REM Remove Git's link.exe from PATH to avoid conflict with MSVC's link.exe
-          REM Git's usr/bin has a Unix link command that conflicts with MSVC linker
-          if exist "C:\Program Files\Git\usr\bin\link.exe" (
-            rename "C:\Program Files\Git\usr\bin\link.exe" "link_git.exe"
-          )
-
-          REM Use Git Bash's sh.exe (better Windows path handling than MSYS2)
-          REM Git is pre-installed on Windows runners
-          set "PATH=C:\Program Files\Git\bin;C:\Program Files\Git\usr\bin;%PATH%"
-
-          REM Set compilers for FFmpeg
-          set CC=cl
-          set CXX=cl
-
-          REM Verify tools
-          echo === Tool locations ===
-          where sh
-          where make
-          where link
-          where cl
-          echo === Environment check ===
-          echo INCLUDE=%INCLUDE%
-          echo LIB=%LIB%
-          echo =====================
-
-          REM Build
+          REM Build using vcpkg-provided FFmpeg (no need to build from source)
           bun run tauri build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
