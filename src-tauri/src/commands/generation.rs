@@ -1,5 +1,4 @@
 use crate::api::{ApiClient, ImageGenerationRequest};
-use crate::commands::settings::AppState;
 use crate::image_processing::{create_thumbnail_base64, download_image, image_to_base64, smart_resize};
 use crate::storage::{Database, ImageRecord};
 use chrono::Utc;
@@ -44,14 +43,13 @@ pub struct GeneratedImageInfo {
 
 #[tauri::command]
 pub async fn generate_image(
-    app_state: State<'_, AppState>,
     db_state: State<'_, DbState>,
     request: GenerateImageRequest,
 ) -> Result<GenerateImageResponse, String> {
     // Load config
     let config = {
-        let store = app_state.config_store.lock().map_err(|e| e.to_string())?;
-        store.load().map_err(|e| e.to_string())?
+        let db = db_state.database.lock().map_err(|e| e.to_string())?;
+        db.load_config().map_err(|e| e.to_string())?
     };
 
     if config.base_url.is_empty() || config.api_token.is_empty() || config.image_model.is_empty() {

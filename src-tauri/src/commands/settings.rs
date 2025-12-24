@@ -1,12 +1,7 @@
 use crate::api::ApiClient;
-use crate::storage::ConfigStore;
+use crate::commands::generation::DbState;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
 use tauri::State;
-
-pub struct AppState {
-    pub config_store: Mutex<ConfigStore>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigResponse {
@@ -32,9 +27,9 @@ pub struct SaveConfigRequest {
 }
 
 #[tauri::command]
-pub async fn load_settings(state: State<'_, AppState>) -> Result<ConfigResponse, String> {
-    let store = state.config_store.lock().map_err(|e| e.to_string())?;
-    let config = store.load().map_err(|e| e.to_string())?;
+pub async fn load_settings(db_state: State<'_, DbState>) -> Result<ConfigResponse, String> {
+    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let config = db.load_config().map_err(|e| e.to_string())?;
 
     Ok(ConfigResponse {
         base_url: config.base_url,
@@ -51,13 +46,13 @@ pub async fn load_settings(state: State<'_, AppState>) -> Result<ConfigResponse,
 
 #[tauri::command]
 pub async fn save_settings(
-    state: State<'_, AppState>,
+    db_state: State<'_, DbState>,
     request: SaveConfigRequest,
 ) -> Result<(), String> {
-    let store = state.config_store.lock().map_err(|e| e.to_string())?;
+    let db = db_state.database.lock().map_err(|e| e.to_string())?;
 
     // Load existing config to preserve token if not provided
-    let mut config = store.load().unwrap_or_default();
+    let mut config = db.load_config().unwrap_or_default();
 
     config.base_url = request.base_url;
     // Only update token if a new one is provided
@@ -69,17 +64,17 @@ pub async fn save_settings(
     config.output_directory = request.output_directory;
     config.output_format = request.output_format;
 
-    store.save(&config).map_err(|e| e.to_string())?;
+    db.save_config(&config).map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
 #[tauri::command]
-pub async fn test_connection(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn test_connection(db_state: State<'_, DbState>) -> Result<String, String> {
     // Extract config values before any await to avoid holding MutexGuard across await
     let (base_url, api_token) = {
-        let store = state.config_store.lock().map_err(|e| e.to_string())?;
-        let config = store.load().map_err(|e| e.to_string())?;
+        let db = db_state.database.lock().map_err(|e| e.to_string())?;
+        let config = db.load_config().map_err(|e| e.to_string())?;
         (config.base_url, config.api_token)
     }; // MutexGuard is dropped here
 
@@ -96,9 +91,9 @@ pub async fn test_connection(state: State<'_, AppState>) -> Result<String, Strin
 }
 
 #[tauri::command]
-pub async fn clear_settings(state: State<'_, AppState>) -> Result<(), String> {
-    let store = state.config_store.lock().map_err(|e| e.to_string())?;
-    store.delete().map_err(|e| e.to_string())
+pub async fn clear_settings(db_state: State<'_, DbState>) -> Result<(), String> {
+    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    db.delete_config().map_err(|e| e.to_string())
 }
 
 #[tauri::command]

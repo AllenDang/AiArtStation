@@ -22,9 +22,9 @@ use commands::{
     // Videos
     generate_video, poll_video_task, get_videos, get_videos_by_asset_type, get_video_detail, get_pending_videos, delete_video, add_video_tag, remove_video_tag,
     // State
-    AppState, DbState,
+    DbState,
 };
-use storage::{ConfigStore, Database};
+use storage::Database;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -34,25 +34,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .setup(|app| {
-            // Get app data directory for config storage
-            let app_data_dir = app.path().app_data_dir()
-                .expect("Failed to get app data directory");
-
-            // Initialize config store
-            let config_store = ConfigStore::new(app_data_dir.clone())
-                .expect("Failed to initialize config store");
-
-            // Load config to get output directory for database
-            let config = config_store.load().unwrap_or_default();
-            let output_dir = if config.output_directory.is_empty() {
-                // Use default if not configured
-                dirs::picture_dir()
-                    .map(|p| p.join("AI-ArtStation"))
-                    .unwrap_or_else(|| PathBuf::from("./AI-ArtStation"))
-            } else {
-                PathBuf::from(&config.output_directory)
-            };
+        .setup(|_app| {
+            // Use default output directory for database
+            // Config is stored in the database itself
+            let output_dir = dirs::picture_dir()
+                .map(|p| p.join("AI-ArtStation"))
+                .unwrap_or_else(|| PathBuf::from("./AI-ArtStation"));
 
             // Initialize database in output directory
             let database = Database::new(output_dir)
@@ -66,10 +53,7 @@ pub fn run() {
             }
 
             // Manage state
-            app.manage(AppState {
-                config_store: Mutex::new(config_store),
-            });
-            app.manage(DbState {
+            _app.manage(DbState {
                 database: Mutex::new(database),
             });
 

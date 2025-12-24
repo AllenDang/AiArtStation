@@ -1,3 +1,4 @@
+use crate::crypto::{decrypt, derive_key, encrypt};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
@@ -5,6 +6,49 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 const DB_FILE: &str = "data.db";
+const CONFIG_KEY: &str = "app_config";
+const DEFAULT_PASSWORD: &str = "ai-artstation-default";
+
+// ============================================================================
+// Config Structure
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub base_url: String,
+    pub api_token: String,
+    pub image_model: String,
+    pub video_model: String,
+    pub output_directory: String,
+    pub output_format: String,
+    pub default_size: String,
+    pub default_aspect_ratio: String,
+    pub watermark: bool,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            api_token: String::new(),
+            image_model: String::new(),
+            video_model: String::new(),
+            output_directory: get_default_output_dir(),
+            output_format: "jpeg".to_string(),
+            default_size: "2K".to_string(),
+            default_aspect_ratio: "1:1".to_string(),
+            watermark: false,
+        }
+    }
+}
+
+fn get_default_output_dir() -> String {
+    dirs::picture_dir()
+        .map(|p| p.join("AI-ArtStation"))
+        .unwrap_or_else(|| PathBuf::from("./AI-ArtStation"))
+        .to_string_lossy()
+        .to_string()
+}
 
 // ============================================================================
 // Data Structures
@@ -109,6 +153,15 @@ impl Database {
     }
 
     fn init_tables(&self) -> Result<()> {
+        // Config table (key-value store for encrypted config)
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS config (
+                key TEXT PRIMARY KEY,
+                value BLOB NOT NULL
+            )",
+            [],
+        ).context("Failed to create config table")?;
+
         // Projects table
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS projects (
@@ -331,6 +384,63 @@ impl Database {
             ).context("Failed to add asset_types to videos table")?;
         }
 
+        Ok(())
+    }
+
+    // ========================================================================
+    // Config Methods
+    // ========================================================================
+
+    /// Save config to database (encrypted)
+    pub fn save_config(&self, config: &AppConfig) -> Result<()> {
+        let json = serde_json::to_string(config)
+            .context("Failed to serialize config")?;
+
+        let key = derive_key(DEFAULT_PASSWORD);
+        let encrypted = encrypt(json.as_bytes(), &key)
+            .context("Failed to encrypt config")?;
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO config (key, value) VALUES (?1, ?2)",
+            params![CONFIG_KEY, encrypted],
+        ).context("Failed to save config")?;
+
+        Ok(())
+    }
+
+    /// Load config from database (decrypted)
+    pub fn load_config(&self) -> Result<AppConfig> {
+        let result: rusqlite::Result<Vec<u8>> = self.conn.query_row(
+            "SELECT value FROM config WHERE key = ?1",
+            params![CONFIG_KEY],
+            |row| row.get(0),
+        );
+
+        match result {
+            Ok(encrypted) => {
+                let key = derive_key(DEFAULT_PASSWORD);
+                let decrypted = decrypt(&encrypted, &key)
+                    .context("Failed to decrypt config")?;
+
+                let json = String::from_utf8(decrypted)
+                    .context("Invalid UTF-8 in config")?;
+
+                serde_json::from_str(&json)
+                    .context("Failed to parse config JSON")
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                Ok(AppConfig::default())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Delete config from database
+    pub fn delete_config(&self) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM config WHERE key = ?1",
+            params![CONFIG_KEY],
+        ).context("Failed to delete config")?;
         Ok(())
     }
 

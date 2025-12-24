@@ -41,10 +41,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-// Helper type for gallery items (either single image or bundle)
+// Helper type for gallery items (single image, bundle, or video)
 type GalleryItem =
-  | { type: "single"; image: GalleryImage }
-  | { type: "bundle"; bundle: ImageBundle };
+  | { type: "single"; image: GalleryImage; created_at: string }
+  | { type: "bundle"; bundle: ImageBundle; created_at: string }
+  | { type: "video"; video: VideoType; created_at: string };
 
 // Asset type icons
 const assetTypeIcons: Record<AssetType, React.ElementType> = {
@@ -136,7 +137,7 @@ export function GalleryPage({
     setPreviewTask(task);
   }, []);
 
-  // Group images by batch_id
+  // Combine and sort images (grouped by batch_id) and videos by created_at
   const galleryItems = useMemo((): GalleryItem[] => {
     const items: GalleryItem[] = [];
     const batchMap = new Map<string, GalleryImage[]>();
@@ -151,7 +152,7 @@ export function GalleryPage({
       }
     }
 
-    // Second pass: create items in order (preserving chronological order)
+    // Second pass: create image items
     for (const image of images) {
       if (image.batch_id) {
         // Skip if we already processed this batch
@@ -169,19 +170,32 @@ export function GalleryPage({
               prompt: batchImages[0].prompt,
               created_at: batchImages[0].created_at,
             },
+            created_at: batchImages[0].created_at,
           });
         } else {
           // Single image with batch_id (shouldn't happen, but handle it)
-          items.push({ type: "single", image });
+          items.push({ type: "single", image, created_at: image.created_at });
         }
       } else {
         // No batch_id - single image
-        items.push({ type: "single", image });
+        items.push({ type: "single", image, created_at: image.created_at });
       }
     }
 
+    // Add completed videos (only in "all" or "videos" mode)
+    if (filter !== "images") {
+      for (const video of videos) {
+        if (video.status === "completed") {
+          items.push({ type: "video", video, created_at: video.created_at });
+        }
+      }
+    }
+
+    // Sort all items by created_at descending (newest first)
+    items.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
     return items;
-  }, [images]);
+  }, [images, videos, filter]);
 
   // Load images
   useEffect(() => {
@@ -541,17 +555,7 @@ export function GalleryPage({
                   onRemoveTag={onRemoveVideoTag}
                 />
               ))}
-              {/* Completed videos (in "all" mode) */}
-              {filter === "all" && videos.filter(v => v.status === "completed").map((video) => (
-                <VideoTaskCard
-                  key={video.id}
-                  video={video}
-                  onClick={setSelectedVideo}
-                  onDismiss={handleDeleteVideo}
-                  onRemoveTag={onRemoveVideoTag}
-                />
-              ))}
-              {/* Completed images and bundles */}
+              {/* All completed items (images, bundles, videos) sorted by time */}
               {galleryItems.map((item) => {
                 if (item.type === "bundle") {
                   return (
@@ -560,6 +564,17 @@ export function GalleryPage({
                       bundle={item.bundle}
                       onView={setPreviewBundle}
                       onDelete={setBundleToDelete}
+                    />
+                  );
+                }
+                if (item.type === "video") {
+                  return (
+                    <VideoTaskCard
+                      key={item.video.id}
+                      video={item.video}
+                      onClick={setSelectedVideo}
+                      onDismiss={handleDeleteVideo}
+                      onRemoveTag={onRemoveVideoTag}
                     />
                   );
                 }

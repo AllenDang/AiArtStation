@@ -1,6 +1,5 @@
 use crate::api::{ApiClient, VideoContentItem, VideoGenerationRequest, VideoImageUrl};
 use crate::commands::generation::DbState;
-use crate::commands::settings::AppState;
 use crate::storage::{VideoRecord, VideoStatusUpdate};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -63,14 +62,13 @@ pub struct VideoGalleryResponse {
 
 #[tauri::command]
 pub async fn generate_video(
-    app_state: State<'_, AppState>,
     db_state: State<'_, DbState>,
     request: GenerateVideoRequest,
 ) -> Result<GenerateVideoResponse, String> {
     // Load config
     let config = {
-        let store = app_state.config_store.lock().map_err(|e| e.to_string())?;
-        store.load().map_err(|e| e.to_string())?
+        let db = db_state.database.lock().map_err(|e| e.to_string())?;
+        db.load_config().map_err(|e| e.to_string())?
     };
 
     if config.base_url.is_empty() || config.api_token.is_empty() || config.video_model.is_empty() {
@@ -205,28 +203,23 @@ pub async fn generate_video(
 
 #[tauri::command]
 pub async fn poll_video_task(
-    app_state: State<'_, AppState>,
     db_state: State<'_, DbState>,
     id: String,
 ) -> Result<Video, String> {
-    // Get video record
-    let record = {
+    // Get video record and config
+    let (record, config) = {
         let db = db_state.database.lock().map_err(|e| e.to_string())?;
-        db.get_video_by_id(&id)
+        let record = db.get_video_by_id(&id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Video not found".to_string())?
+            .ok_or_else(|| "Video not found".to_string())?;
+        let config = db.load_config().map_err(|e| e.to_string())?;
+        (record, config)
     };
 
     // If already completed or failed, just return current status
     if record.status == "completed" || record.status == "failed" {
         return Ok(map_to_video(record));
     }
-
-    // Load config
-    let config = {
-        let store = app_state.config_store.lock().map_err(|e| e.to_string())?;
-        store.load().map_err(|e| e.to_string())?
-    };
 
     // Create API client and poll
     let client = ApiClient::new(&config.base_url, &config.api_token)
