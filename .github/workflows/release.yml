@@ -171,8 +171,11 @@ jobs:
           pkg-config --libs --static libavcodec libavformat libavutil libswscale libswresample
 
           REM Build using pre-built static FFmpeg
-          REM RUSTFLAGS includes Windows system libraries required by FFmpeg and its dependencies
-          set "RUSTFLAGS=-C link-arg=user32.lib -C link-arg=bcrypt.lib -C link-arg=secur32.lib -C link-arg=ws2_32.lib -C link-arg=mfuuid.lib -C link-arg=ole32.lib -C link-arg=strmiids.lib -C link-arg=gdi32.lib -C link-arg=kernel32.lib -C link-arg=winmm.lib -C link-arg=imm32.lib -C link-arg=oleaut32.lib -C link-arg=version.lib -C link-arg=uuid.lib -C link-arg=advapi32.lib -C link-arg=setupapi.lib -C link-arg=shell32.lib -C link-arg=dinput8.lib"
+          REM RUSTFLAGS includes:
+          REM   1. Library search path for FFmpeg dependencies
+          REM   2. FFmpeg dependency libraries (zlib, SDL2, jxl, vpx, webp, ass, freetype, harfbuzz, etc.)
+          REM   3. Windows system libraries required by FFmpeg and its dependencies
+          set "RUSTFLAGS=-L native=C:/ffmpeg/lib -l static=zlib -l static=SDL2-static -l static=vpxmt -l static=jxl -l static=jxl_threads -l static=jxl_cms -l static=hwy -l static=brotlicommon -l static=brotlidec -l static=brotlienc -l static=libwebp -l static=libwebpmux -l static=libwebpdecoder -l static=libwebpdemux -l static=libsharpyuv -l static=ass -l static=fribidi -l static=freetype -l static=harfbuzz -l static=Imath-3_1 -l static=Iex-3_3 -l static=IlmThread-3_3 -l static=OpenEXR-3_3 -l static=OpenEXRCore-3_3 -l static=OpenEXRUtil-3_3 -C link-arg=user32.lib -C link-arg=bcrypt.lib -C link-arg=secur32.lib -C link-arg=ws2_32.lib -C link-arg=mfuuid.lib -C link-arg=ole32.lib -C link-arg=strmiids.lib -C link-arg=gdi32.lib -C link-arg=kernel32.lib -C link-arg=winmm.lib -C link-arg=imm32.lib -C link-arg=oleaut32.lib -C link-arg=version.lib -C link-arg=uuid.lib -C link-arg=advapi32.lib -C link-arg=setupapi.lib -C link-arg=shell32.lib -C link-arg=dinput8.lib -C link-arg=dxguid.lib"
           bun run tauri build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
