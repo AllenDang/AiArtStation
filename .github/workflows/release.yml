@@ -78,23 +78,25 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          # Download pre-built static FFmpeg 7.1 LGPL from BtbN (compatible with ffmpeg-next 8.x)
-          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-lgpl-7.1.zip"
+          # Download pre-built static FFmpeg 7.1 LGPL from System233/ffmpeg-msvc-prebuilt
+          # This provides MSVC-compatible static libraries with headers
+          $ffmpegUrl = "https://github.com/System233/ffmpeg-msvc-prebuilt/releases/download/n7.1-241205/ffmpeg-n7.1-241205-lgpl-amd64-static.zip"
           $ffmpegZip = "C:\ffmpeg.zip"
           $ffmpegDir = "C:\ffmpeg"
 
-          Write-Host "Downloading pre-built FFmpeg (static)..."
+          Write-Host "Downloading pre-built FFmpeg (MSVC static)..."
           Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip
 
           Write-Host "Extracting FFmpeg..."
           Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegDir -Force
 
-          # Find the extracted folder (it has version in name)
-          $extractedDir = Get-ChildItem -Path $ffmpegDir -Directory | Select-Object -First 1
-          $ffmpegRoot = $extractedDir.FullName
+          # The archive extracts directly without a subdirectory
+          $ffmpegRoot = $ffmpegDir
 
           Write-Host "FFmpeg extracted to: $ffmpegRoot"
           Get-ChildItem $ffmpegRoot
+          Get-ChildItem "$ffmpegRoot\lib" | Select-Object -First 20
+          Get-ChildItem "$ffmpegRoot\include" | Select-Object -First 10
 
           # Set FFMPEG_DIR for ffmpeg-sys-next to find FFmpeg
           Add-Content $env:GITHUB_ENV "FFMPEG_DIR=$ffmpegRoot`n"
