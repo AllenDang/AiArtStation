@@ -35,12 +35,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest  # arm64
+          - platform: macos-latest  # arm64 (Apple Silicon)
             args: --target aarch64-apple-darwin
             target: aarch64-apple-darwin
-          - platform: macos-13  # x86_64
-            args: --target x86_64-apple-darwin
-            target: x86_64-apple-darwin
           - platform: windows-latest
             args: ''
             target: ''
