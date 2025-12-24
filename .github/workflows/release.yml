@@ -74,6 +74,13 @@ jobs:
           # Set LIBCLANG_PATH for bindgen
           Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
 
+      - name: Install pkgconf (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install pkgconfiglite -y
+          Write-Host "pkgconf installed"
+
       - name: Download pre-built FFmpeg (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
@@ -90,25 +97,40 @@ jobs:
           Write-Host "Extracting FFmpeg..."
           Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegDir -Force
 
-          # The archive extracts directly without a subdirectory
           $ffmpegRoot = $ffmpegDir
 
           Write-Host "FFmpeg extracted to: $ffmpegRoot"
           Get-ChildItem $ffmpegRoot
           Get-ChildItem "$ffmpegRoot\lib" | Select-Object -First 20
-          Get-ChildItem "$ffmpegRoot\include" | Select-Object -First 10
 
-          # Set FFMPEG_DIR for ffmpeg-sys-next to find FFmpeg
+          # Fix pkg-config files: replace /usr/local with actual Windows path
+          $pkgconfigDir = "$ffmpegRoot\lib\pkgconfig"
+          Get-ChildItem "$pkgconfigDir\*.pc" | ForEach-Object {
+            $content = Get-Content $_.FullName -Raw
+            # Replace Unix paths with Windows paths
+            $content = $content -replace '/usr/local', $ffmpegRoot.Replace('\', '/')
+            $content = $content -replace '-libpath:/usr/local/lib ', "-libpath:$($ffmpegRoot.Replace('\', '/'))/lib "
+            Set-Content $_.FullName -Value $content -NoNewline
+            Write-Host "Fixed: $($_.Name)"
+          }
+
+          # Show a sample fixed .pc file
+          Write-Host "`n=== Sample libavcodec.pc ==="
+          Get-Content "$pkgconfigDir\libavcodec.pc"
+
+          # Set environment variables for ffmpeg-sys-next
           Add-Content $env:GITHUB_ENV "FFMPEG_DIR=$ffmpegRoot`n"
+          Add-Content $env:GITHUB_ENV "PKG_CONFIG_PATH=$pkgconfigDir`n"
+          Add-Content $env:GITHUB_ENV "PKG_CONFIG_ALLOW_SYSTEM_LIBS=1`n"
 
           # Patch Cargo.toml to use static linking with pre-built FFmpeg
           $cargoToml = Get-Content src-tauri/Cargo.toml -Raw
           $cargoToml = $cargoToml -replace 'ffmpeg-next = \{ version = "8", features = \["static", "build"\] \}', 'ffmpeg-next = { version = "8", features = ["static"] }'
           Set-Content src-tauri/Cargo.toml -Value $cargoToml
-          Write-Host "Patched Cargo.toml to use pre-built static FFmpeg"
+          Write-Host "`nPatched Cargo.toml to use pre-built static FFmpeg"
 
           # Verify FFmpeg
-          Write-Host "Verifying FFmpeg installation..."
+          Write-Host "`nVerifying FFmpeg installation..."
           & "$ffmpegRoot\bin\ffmpeg.exe" -version
 
       - name: Setup Node
@@ -143,8 +165,14 @@ jobs:
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
 
           echo FFMPEG_DIR=%FFMPEG_DIR%
+          echo PKG_CONFIG_PATH=%PKG_CONFIG_PATH%
+
+          REM Verify pkg-config can find FFmpeg
+          pkg-config --libs --static libavcodec libavformat libavutil libswscale libswresample
 
           REM Build using pre-built static FFmpeg
+          REM RUSTFLAGS includes Windows system libraries required by FFmpeg and its dependencies
+          set "RUSTFLAGS=-C link-arg=user32.lib -C link-arg=bcrypt.lib -C link-arg=secur32.lib -C link-arg=ws2_32.lib -C link-arg=mfuuid.lib -C link-arg=ole32.lib -C link-arg=strmiids.lib -C link-arg=gdi32.lib -C link-arg=kernel32.lib -C link-arg=winmm.lib -C link-arg=imm32.lib -C link-arg=oleaut32.lib -C link-arg=version.lib -C link-arg=uuid.lib -C link-arg=advapi32.lib -C link-arg=setupapi.lib -C link-arg=shell32.lib -C link-arg=dinput8.lib"
           bun run tauri build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
