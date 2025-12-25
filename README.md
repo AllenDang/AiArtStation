@@ -1,40 +1,82 @@
-# Ai Art Station
+# AI 艺术工作站
 
-## Setup
+一款专为艺术家打造的 AI 图像与视频生成桌面应用。
 
+## 简介
+
+AI 艺术工作站是一个基于 Tauri + React 构建的跨平台桌面应用，帮助艺术家利用 AI 技术快速生成高质量的图像和视频内容。
+
+## 主要功能
+
+### 图像生成
+
+- 支持文生图，通过文字描述生成图像
+- 支持图生图，可添加多张参考图片
+- 支持图像蒙版绘制，精准控制生成区域
+- 多种画面比例：1:1、4:3、16:9、9:16、3:2、21:9 等
+- 支持 2K/4K 高清输出
+- 组图生成功能，一次生成多张连续图片
+
+### 视频生成
+
+- 文生视频：通过文字描述生成视频
+- 图生视频：以图片作为首帧或尾帧生成视频
+- 支持首尾帧同时指定
+- 支持添加参考图片引导生成风格
+
+### 素材管理
+
+- 项目管理：按项目组织您的创作内容
+- 素材分类：支持角色、背景、风格、道具四种素材类型
+- 图库浏览：轻松预览和管理所有生成的图片
+- 视频库：统一管理所有生成的视频
+
+### 创作辅助
+
+- 蒙版绘制工具：在参考图上绘制蒙版指定生成区域
+- 拖拽操作：支持拖拽图片/视频到参考区域
+- 实时任务状态：查看生成进度和结果
+
+## 技术栈
+
+- **前端**：React + TypeScript + Tailwind CSS
+- **桌面框架**：Tauri 2.0
+- **后端**：Rust
+- **UI 组件**：Radix UI
+
+## 安装与运行
+
+### 环境要求
+
+- Node.js 18+
+- Bun 包管理器
+- Rust 工具链
+
+### 开发运行
+
+```bash
+# 安装依赖
+bun install
+
+# 启动开发服务器
+bun run tauri dev
 ```
-╰─❯ sh (curl -sSL https://create.tauri.app/sh | psub)
-info: downloading create-tauri-app
-✔ Project name · ai-artstation
-✔ Identifier · com.ai-artstation.app
-✔ Choose which language to use for your frontend · TypeScript / JavaScript - (pnpm, yarn, npm, deno, bun)
-✔ Choose your package manager · bun
-✔ Choose your UI template · React - (https://react.dev/)
-✔ Choose your UI flavor · TypeScript
 
-Template created!
+### 构建发布
 
-Your system is missing dependencies (or they do not exist in $PATH):
-╭─────┬───────────────────────╮
-│ Bun │ Visit https://bun.sh/ │
-╰─────┴───────────────────────╯
-
-Make sure you have installed the prerequisites for your OS: https://tauri.app/start/prerequisites/, then run:
-  cd ai-artstation
-  bun install
-  bun run tauri android init
-  bun run tauri ios init
-
-For Desktop development, run:
-  bun run tauri dev
-
-For Android development, run:
-  bun run tauri android dev
-
-For iOS development, run:
-  bun run tauri ios dev
+```bash
+bun run tauri build
 ```
 
-## Purpose
+## 配置说明
 
-Create a ai workstation for artist to use AI to generate image and videos
+首次使用需要在设置页面配置：
+
+- API 地址
+- API Token
+- 图像生成模型
+- 视频生成模型
+- 输出目录
+- 输出格式
+
+当前仅支持火山引擎的SeeDance和SeeDream模型
