@@ -233,11 +233,7 @@ export function ImageDropZone({
           if (!singleImageFill && images.length + newImages.length >= maxImages) break;
 
           try {
-            // Check for duplicate by filename (skip for singleImageFill as it replaces)
-            if (!singleImageFill && (images.some(img => img.file_path === file.name) ||
-                newImages.some(img => img.file_path === file.name))) {
-              continue; // Already exists, skip
-            }
+            // No duplicate check for file drops - browser doesn't provide full paths
 
             // Read file content directly using FileReader (works without file path)
             const base64 = await new Promise<string>((resolve, reject) => {
@@ -263,7 +259,7 @@ export function ImageDropZone({
               was_resized: false,
               original_width: dimensions.width,
               original_height: dimensions.height,
-              file_path: file.name, // Only have filename, not full path
+              file_path: undefined, // Browser security prevents full path access from drag-and-drop
             });
           } catch (err) {
             console.error("Failed to process image:", err);
