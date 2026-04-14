@@ -104,7 +104,7 @@ export interface GenerateVideoRequest {
   last_frame?: string;      // Base64
   reference_images?: string[]; // Base64 array for multi-ref
   resolution?: string;      // "480p", "720p", "1080p"
-  duration?: number;        // 2-12 seconds
+  duration?: number;        // -1 (auto), 2-12, 15 seconds
   aspect_ratio?: string;    // "16:9", "4:3", "1:1", etc.
   source_image_id?: string; // Parent image ID if applicable
 }

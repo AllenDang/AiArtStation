@@ -97,7 +97,7 @@ export function VideoPreview({
             <span className="bg-secondary text-secondary-foreground px-2 py-1 rounded">
               {generationTypeText}
             </span>
-            {video.duration && (
+            {video.duration && video.duration > 0 && (
               <span className="bg-secondary text-secondary-foreground px-2 py-1 rounded">
                 {video.duration}秒
               </span>

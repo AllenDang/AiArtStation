@@ -265,7 +265,7 @@ export function VideoTaskCard({ video, onRetry, onDismiss, onClick, onRemoveTag 
         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity p-2 flex flex-col justify-end pointer-events-none">
           <p className="text-xs text-white line-clamp-2">{video.prompt}</p>
           <div className="flex gap-2 mt-1 text-[10px] text-white/70">
-            {video.duration && <span>{video.duration}秒</span>}
+            {video.duration && video.duration > 0 && <span>{video.duration}秒</span>}
             {video.resolution && <span>{video.resolution}</span>}
           </div>
         </div>

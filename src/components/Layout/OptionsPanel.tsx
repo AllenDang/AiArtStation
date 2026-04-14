@@ -50,11 +50,15 @@ const VIDEO_RESOLUTION_OPTIONS = [
   { value: "1080p", label: "1080p" },
 ];
 
-// Video duration options (2-12 seconds)
-const VIDEO_DURATION_OPTIONS = Array.from({ length: 11 }, (_, i) => ({
-  value: String(i + 2),
-  label: `${i + 2}秒`,
-}));
+// Video duration options (-1 = auto, 2-12, 15 seconds)
+const VIDEO_DURATION_OPTIONS = [
+  { value: "-1", label: "自动" },
+  ...Array.from({ length: 11 }, (_, i) => ({
+    value: String(i + 2),
+    label: `${i + 2}秒`,
+  })),
+  { value: "15", label: "15秒" },
+];
 
 // Video generation type options
 const VIDEO_GENERATION_TYPE_OPTIONS: { value: VideoGenerationType; label: string; description: string }[] = [

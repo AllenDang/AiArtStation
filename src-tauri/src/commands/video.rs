@@ -41,7 +41,7 @@ pub struct GenerateVideoRequest {
     pub last_frame: Option<String>,      // Base64
     pub reference_images: Option<Vec<String>>, // Base64 array for multi-ref
     pub resolution: Option<String>,      // "480p", "720p", "1080p"
-    pub duration: Option<i32>,           // 2-12 seconds
+    pub duration: Option<i32>,           // -1 (auto), 2-12, 15 seconds
     pub aspect_ratio: Option<String>,    // "16:9", "4:3", "1:1", etc.
     pub source_image_id: Option<String>, // Parent image ID if applicable
 }
@@ -661,16 +661,23 @@ fn extract_frame_at_position(video_path: &str, output_path: &str, position: Fram
         let annexb_data = avcc_to_annexb(&sample_data)?;
 
         // Decode the frame
-        let decoded = decoder.decode(&annexb_data)
-            .map_err(|e| format!("Failed to decode frame {}: {:?}", sample_num, e))?;
-
-        // Store the decoded frame if we got one
-        if let Some(yuv) = decoded {
-            let (width, height) = yuv.dimensions();
-            let rgb_len = width * height * 3;
-            let mut rgb_data = vec![0u8; rgb_len];
-            yuv.write_rgb8(&mut rgb_data);
-            last_yuv_data = Some((width, height, rgb_data));
+        // Note: openh264 only supports Baseline profile and cannot decode B-frames.
+        // Skip decode errors so B-frames are skipped while I/P-frames still decode.
+        match decoder.decode(&annexb_data) {
+            Ok(Some(yuv)) => {
+                let (width, height) = yuv.dimensions();
+                let rgb_len = width * height * 3;
+                let mut rgb_data = vec![0u8; rgb_len];
+                yuv.write_rgb8(&mut rgb_data);
+                last_yuv_data = Some((width, height, rgb_data));
+            }
+            Ok(None) => {
+                // Decoded successfully but no output frame yet (normal for some NALUs)
+            }
+            Err(_) => {
+                // Skip frames that fail to decode (e.g., B-frames)
+                continue;
+            }
         }
     }
 
