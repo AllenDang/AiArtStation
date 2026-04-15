@@ -572,8 +572,9 @@ enum FramePosition {
 fn extract_frame_at_position(video_path: &str, output_path: &str, position: FramePosition) -> Result<(), String> {
     use std::fs::File;
     use std::io::{BufReader, Read, Seek, SeekFrom};
-    use openh264::decoder::Decoder;
+    use openh264::decoder::{Decoder, DecoderConfig, Flush};
     use openh264::formats::YUVSource;
+    use openh264::OpenH264API;
 
     let file = File::open(video_path).map_err(|e| format!("Failed to open video: {}", e))?;
     let mut reader = BufReader::new(file);
@@ -613,8 +614,11 @@ fn extract_frame_at_position(video_path: &str, output_path: &str, position: Fram
     // Get AVC decoder config (SPS/PPS from avcC box)
     let (sps_data, pps_data) = get_avc_config(video_track)?;
 
-    // Initialize OpenH264 decoder
-    let mut decoder = Decoder::new()
+    // Initialize OpenH264 decoder with NoFlush to properly handle B-frame reordering.
+    // The default Flush::Flush mode interferes with B-frame buffering in the decoder,
+    // causing decode errors. We feed all samples and flush remaining frames at the end.
+    let config = DecoderConfig::new().flush_after_decode(Flush::NoFlush);
+    let mut decoder = Decoder::with_api_config(OpenH264API::from_source(), config)
         .map_err(|e| format!("Failed to create decoder: {:?}", e))?;
 
     // Feed SPS and PPS first (as Annex B format with start codes)
@@ -647,22 +651,17 @@ fn extract_frame_at_position(video_path: &str, output_path: &str, position: Fram
     let mut last_yuv_data: Option<(usize, usize, Vec<u8>)> = None;
 
     for sample_num in start_sample..=end_sample {
-        // Get sample offset and size
         let (sample_offset, sample_size) = get_sample_location(video_track, sample_num)?;
 
-        // Read the sample data
         reader.seek(SeekFrom::Start(sample_offset))
             .map_err(|e| format!("Failed to seek to sample: {}", e))?;
         let mut sample_data = vec![0u8; sample_size as usize];
         reader.read_exact(&mut sample_data)
             .map_err(|e| format!("Failed to read sample: {}", e))?;
 
-        // Convert sample from AVCC format (length-prefixed) to Annex B (start codes)
+        // Convert from AVCC format to Annex B
         let annexb_data = avcc_to_annexb(&sample_data)?;
 
-        // Decode the frame
-        // Note: openh264 only supports Baseline profile and cannot decode B-frames.
-        // Skip decode errors so B-frames are skipped while I/P-frames still decode.
         match decoder.decode(&annexb_data) {
             Ok(Some(yuv)) => {
                 let (width, height) = yuv.dimensions();
@@ -671,13 +670,19 @@ fn extract_frame_at_position(video_path: &str, output_path: &str, position: Fram
                 yuv.write_rgb8(&mut rgb_data);
                 last_yuv_data = Some((width, height, rgb_data));
             }
-            Ok(None) => {
-                // Decoded successfully but no output frame yet (normal for some NALUs)
-            }
-            Err(_) => {
-                // Skip frames that fail to decode (e.g., B-frames)
-                continue;
-            }
+            Ok(None) => {}
+            Err(_) => continue,
+        }
+    }
+
+    // Flush remaining frames from the decoder's reorder buffer
+    if let Ok(remaining) = decoder.flush_remaining() {
+        for yuv in &remaining {
+            let (width, height) = yuv.dimensions();
+            let rgb_len = width * height * 3;
+            let mut rgb_data = vec![0u8; rgb_len];
+            yuv.write_rgb8(&mut rgb_data);
+            last_yuv_data = Some((width, height, rgb_data));
         }
     }
 
