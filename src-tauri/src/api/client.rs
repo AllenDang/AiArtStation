@@ -82,22 +82,50 @@ pub struct VideoGenerationRequest {
     pub content: Vec<VideoContentItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ratio: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generate_audio: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_last_frame: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watermark: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct VideoContentItem {
     #[serde(rename = "type")]
-    pub content_type: String, // "text" or "image_url"
+    pub content_type: String, // "text", "image_url", "video_url", "audio_url"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_url: Option<VideoImageUrl>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>, // "first_frame", "last_frame", "reference_image"
+    pub video_url: Option<VideoVideoUrl>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_url: Option<VideoAudioUrl>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>, // "first_frame", "last_frame", "reference_image", "reference_video", "reference_audio"
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct VideoImageUrl {
+    pub url: String, // Base64 data URL or HTTP URL
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VideoVideoUrl {
+    pub url: String, // Base64 data URL or HTTP URL
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VideoAudioUrl {
     pub url: String, // Base64 data URL or HTTP URL
 }
 

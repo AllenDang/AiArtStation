@@ -14,7 +14,7 @@ use commands::{
     get_gallery, search_gallery, get_image_detail, delete_gallery_image, regenerate_thumbnails,
     add_image_tag, remove_image_tag, get_asset_type_counts, get_gallery_by_asset_type, combine_image_with_mask,
     // Files
-    read_image_file, read_image_raw, open_folder, open_file, reveal_file, path_exists, ensure_directory, get_file_info,
+    read_image_file, read_image_raw, read_media_file, open_folder, open_file, reveal_file, path_exists, ensure_directory, get_file_info,
     // Projects
     create_project, get_projects, get_project, update_project, delete_project,
     // Assets
@@ -83,6 +83,7 @@ pub fn run() {
             // Files
             read_image_file,
             read_image_raw,
+            read_media_file,
             open_folder,
             open_file,
             reveal_file,

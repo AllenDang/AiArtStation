@@ -48,7 +48,7 @@ export interface UpdateAssetRequest {
 }
 
 // Video Types
-export type VideoGenerationType = "text-to-video" | "image-to-video-first" | "image-to-video-both" | "image-to-video-ref";
+export type VideoGenerationType = "text-to-video" | "image-to-video-first" | "image-to-video-both" | "image-to-video-ref" | "multimodal-ref";
 export type VideoStatus = "pending" | "processing" | "completed" | "failed";
 
 export interface Video {
@@ -80,6 +80,7 @@ export interface Video {
 export interface VideoDragData {
   type: "ai-artstation-video";
   video_id: string;
+  file_path?: string;              // Video file path for use as reference
   first_frame_path?: string;
   last_frame_path?: string;
   first_frame_thumbnail?: string;  // For preview
@@ -103,17 +104,25 @@ export interface GenerateVideoRequest {
   first_frame?: string;     // Base64
   last_frame?: string;      // Base64
   reference_images?: string[]; // Base64 array for multi-ref
+  reference_videos?: string[]; // Base64 data URLs for reference videos
+  reference_audios?: string[]; // Base64 data URLs for reference audios
   resolution?: string;      // "480p", "720p", "1080p"
-  duration?: number;        // -1 (auto), 2-12, 15 seconds
+  duration?: number;        // -1 (auto), 4-15 seconds
   aspect_ratio?: string;    // "16:9", "4:3", "1:1", etc.
+  generate_audio?: boolean; // Generate audio with video (default true)
+  return_last_frame?: boolean; // Return last frame image (default false)
+  watermark?: boolean;      // Include watermark (default false)
+  seed?: number;            // Random seed (-1 to 2^32-1)
   source_image_id?: string; // Parent image ID if applicable
 }
 
 // Request with file paths - for hooks to process
-export interface GenerateVideoRequestWithPaths extends Omit<GenerateVideoRequest, 'first_frame' | 'last_frame' | 'reference_images'> {
+export interface GenerateVideoRequestWithPaths extends Omit<GenerateVideoRequest, 'first_frame' | 'last_frame' | 'reference_images' | 'reference_videos' | 'reference_audios'> {
   first_frame_input?: ReferenceImageInput;
   last_frame_input?: ReferenceImageInput;
   reference_image_inputs?: ReferenceImageInput[];
+  reference_video_paths?: string[];  // File paths to video files
+  reference_audio_paths?: string[];  // File paths to audio files
 }
 
 export interface GenerateVideoResponse {
@@ -188,6 +197,13 @@ export interface GeneratedImageInfo {
 export interface GenerateImageResponse {
   images: GeneratedImageInfo[];
   tokens_used: number;
+}
+
+// Media File Processing (video/audio)
+export interface MediaFileInfo {
+  base64: string;
+  file_size: number;
+  mime_type: string;
 }
 
 // Image File Processing

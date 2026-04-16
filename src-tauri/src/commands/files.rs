@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD, Engine};
 use crate::image_processing::{image_to_base64, smart_resize};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,43 @@ pub async fn read_image_file(path: String) -> Result<ImageFileInfo, String> {
         was_resized: result.was_resized,
         original_width: result.original_width,
         original_height: result.original_height,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaFileInfo {
+    pub base64: String,
+    pub file_size: u64,
+    pub mime_type: String,
+}
+
+/// Read a video or audio file and return as base64 data URL
+#[tauri::command]
+pub fn read_media_file(path: String) -> Result<MediaFileInfo, String> {
+    let data = std::fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let file_size = data.len() as u64;
+
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let mime_type = match ext.as_str() {
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        _ => return Err(format!("Unsupported media file type: .{}", ext)),
+    };
+
+    let encoded = STANDARD.encode(&data);
+    let base64_url = format!("data:{};base64,{}", mime_type, encoded);
+
+    Ok(MediaFileInfo {
+        base64: base64_url,
+        file_size,
+        mime_type: mime_type.to_string(),
     })
 }
 

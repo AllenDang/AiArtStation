@@ -1,4 +1,4 @@
-use crate::api::{ApiClient, VideoContentItem, VideoGenerationRequest, VideoImageUrl};
+use crate::api::{ApiClient, VideoAudioUrl, VideoContentItem, VideoGenerationRequest, VideoImageUrl, VideoVideoUrl};
 use crate::commands::generation::DbState;
 use crate::storage::{VideoRecord, VideoStatusUpdate};
 use chrono::Utc;
@@ -36,13 +36,19 @@ pub struct Video {
 pub struct GenerateVideoRequest {
     pub project_id: String,
     pub prompt: String,
-    pub generation_type: String, // "text-to-video", "image-to-video-first", "image-to-video-both", "image-to-video-ref"
+    pub generation_type: String, // "text-to-video", "image-to-video-first", "image-to-video-both", "image-to-video-ref", "multimodal-ref"
     pub first_frame: Option<String>,     // Base64
     pub last_frame: Option<String>,      // Base64
     pub reference_images: Option<Vec<String>>, // Base64 array for multi-ref
+    pub reference_videos: Option<Vec<String>>, // Base64 data URLs for reference videos
+    pub reference_audios: Option<Vec<String>>, // Base64 data URLs for reference audios
     pub resolution: Option<String>,      // "480p", "720p", "1080p"
-    pub duration: Option<i32>,           // -1 (auto), 2-12, 15 seconds
+    pub duration: Option<i32>,           // -1 (auto), 4-15 seconds
     pub aspect_ratio: Option<String>,    // "16:9", "4:3", "1:1", etc.
+    pub generate_audio: Option<bool>,    // Generate audio with video (default true)
+    pub return_last_frame: Option<bool>, // Return last frame image (default false)
+    pub watermark: Option<bool>,         // Include watermark (default false)
+    pub seed: Option<i64>,               // Random seed (-1 to 2^32-1)
     pub source_image_id: Option<String>, // Parent image ID if applicable
 }
 
@@ -79,36 +85,26 @@ pub async fn generate_video(
     let client = ApiClient::new(&config.base_url, &config.api_token)
         .map_err(|e| e.to_string())?;
 
-    // Build prompt with parameters
-    let mut prompt_with_params = request.prompt.clone();
-    if let Some(ratio) = &request.aspect_ratio {
-        prompt_with_params.push_str(&format!(" --ratio {}", ratio));
-    }
-    if let Some(dur) = request.duration {
-        prompt_with_params.push_str(&format!(" --dur {}", dur));
-    }
-    if let Some(res) = &request.resolution {
-        prompt_with_params.push_str(&format!(" --rs {}", res));
-    }
-
-    // Build content array
+    // Build content array with clean prompt (params passed as body fields)
     let mut content = vec![VideoContentItem {
         content_type: "text".to_string(),
-        text: Some(prompt_with_params),
+        text: Some(request.prompt.clone()),
         image_url: None,
+        video_url: None,
+        audio_url: None,
         role: None,
     }];
 
-    // Add images based on generation type
+    // Add media based on generation type
     match request.generation_type.as_str() {
         "image-to-video-first" => {
             if let Some(first_frame) = &request.first_frame {
                 content.push(VideoContentItem {
                     content_type: "image_url".to_string(),
                     text: None,
-                    image_url: Some(VideoImageUrl {
-                        url: first_frame.clone(),
-                    }),
+                    image_url: Some(VideoImageUrl { url: first_frame.clone() }),
+                    video_url: None,
+                    audio_url: None,
                     role: None, // No role for single first frame
                 });
             }
@@ -118,9 +114,9 @@ pub async fn generate_video(
                 content.push(VideoContentItem {
                     content_type: "image_url".to_string(),
                     text: None,
-                    image_url: Some(VideoImageUrl {
-                        url: first_frame.clone(),
-                    }),
+                    image_url: Some(VideoImageUrl { url: first_frame.clone() }),
+                    video_url: None,
+                    audio_url: None,
                     role: Some("first_frame".to_string()),
                 });
             }
@@ -128,35 +124,69 @@ pub async fn generate_video(
                 content.push(VideoContentItem {
                     content_type: "image_url".to_string(),
                     text: None,
-                    image_url: Some(VideoImageUrl {
-                        url: last_frame.clone(),
-                    }),
+                    image_url: Some(VideoImageUrl { url: last_frame.clone() }),
+                    video_url: None,
+                    audio_url: None,
                     role: Some("last_frame".to_string()),
                 });
             }
         }
-        "image-to-video-ref" => {
+        "image-to-video-ref" | "multimodal-ref" => {
+            // Reference images
             if let Some(ref_images) = &request.reference_images {
                 for img in ref_images {
                     content.push(VideoContentItem {
                         content_type: "image_url".to_string(),
                         text: None,
-                        image_url: Some(VideoImageUrl {
-                            url: img.clone(),
-                        }),
+                        image_url: Some(VideoImageUrl { url: img.clone() }),
+                        video_url: None,
+                        audio_url: None,
                         role: Some("reference_image".to_string()),
                     });
                 }
             }
+            // Reference videos (multimodal-ref only)
+            if let Some(ref_videos) = &request.reference_videos {
+                for vid in ref_videos {
+                    content.push(VideoContentItem {
+                        content_type: "video_url".to_string(),
+                        text: None,
+                        image_url: None,
+                        video_url: Some(VideoVideoUrl { url: vid.clone() }),
+                        audio_url: None,
+                        role: Some("reference_video".to_string()),
+                    });
+                }
+            }
+            // Reference audios (multimodal-ref only)
+            if let Some(ref_audios) = &request.reference_audios {
+                for aud in ref_audios {
+                    content.push(VideoContentItem {
+                        content_type: "audio_url".to_string(),
+                        text: None,
+                        image_url: None,
+                        video_url: None,
+                        audio_url: Some(VideoAudioUrl { url: aud.clone() }),
+                        role: Some("reference_audio".to_string()),
+                    });
+                }
+            }
         }
-        _ => {} // text-to-video has no images
+        _ => {} // text-to-video has no media
     }
 
-    // Create video task
+    // Create video task with body-level parameters
     let api_request = VideoGenerationRequest {
         model: config.video_model.clone(),
         content,
-        service_tier: None, // Use default (online inference)
+        service_tier: None,
+        resolution: request.resolution.clone(),
+        ratio: request.aspect_ratio.clone(), // Map internal "aspect_ratio" to API "ratio"
+        duration: request.duration,
+        generate_audio: request.generate_audio,
+        return_last_frame: request.return_last_frame,
+        watermark: request.watermark,
+        seed: request.seed,
     };
 
     let response = client.create_video_task(api_request).await

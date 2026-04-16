@@ -67,6 +67,7 @@ export function VideoTaskCard({ video, onRetry, onDismiss, onClick, onRemoveTag 
     const dragData: VideoDragData = {
       type: "ai-artstation-video",
       video_id: video.id,
+      file_path: video.file_path,
       first_frame_path: video.first_frame_path,
       last_frame_path: video.last_frame_path,
       first_frame_thumbnail: video.first_frame_thumbnail,
@@ -92,11 +93,12 @@ export function VideoTaskCard({ video, onRetry, onDismiss, onClick, onRemoveTag 
     failed: "生成失败",
   }[video.status];
 
-  const generationTypeText = {
+  const generationTypeText: string = {
     "text-to-video": "文生视频",
     "image-to-video-first": "首帧生成",
     "image-to-video-both": "首尾帧生成",
     "image-to-video-ref": "参考图生成",
+    "multimodal-ref": "多模态参考",
   }[video.generation_type] || video.generation_type;
 
   // Convert file path to Tauri asset URL

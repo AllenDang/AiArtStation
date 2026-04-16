@@ -60,11 +60,12 @@ export function VideoPreview({
 
   const videoSrc = video.file_path ? convertFileSrc(video.file_path) : null;
 
-  const generationTypeText = {
+  const generationTypeText: string = {
     "text-to-video": "文生视频",
     "image-to-video-first": "首帧生成",
     "image-to-video-both": "首尾帧生成",
     "image-to-video-ref": "参考图生成",
+    "multimodal-ref": "多模态参考",
   }[video.generation_type] || video.generation_type;
 
   return (

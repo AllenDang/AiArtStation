@@ -8,6 +8,7 @@ import type {
   VideoGalleryResponse,
   ReferenceImageInput,
   ImageFileInfo,
+  MediaFileInfo,
 } from "../types";
 
 interface UseVideoGenerationOptions {
@@ -59,6 +60,12 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
     return input.base64;
   };
 
+  // Helper to read video/audio file as base64 data URL
+  const readMediaFile = async (path: string): Promise<string> => {
+    const result = await invoke<MediaFileInfo>("read_media_file", { path });
+    return result.base64;
+  };
+
   const generateVideo = useCallback((request: GenerateVideoRequestWithPaths) => {
     // Create a temporary ID for immediate display
     const tempId = crypto.randomUUID();
@@ -86,13 +93,15 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
       setError(null);
       try {
         // Read full-resolution images from file paths
-        const [firstFrame, lastFrame, refImages] = await Promise.all([
+        const [firstFrame, lastFrame, refImages, refVideos, refAudios] = await Promise.all([
           readImageFromPath(request.first_frame_input),
           readImageFromPath(request.last_frame_input),
           Promise.all((request.reference_image_inputs || []).map(input => readImageFromPath(input))),
+          Promise.all((request.reference_video_paths || []).map(path => readMediaFile(path))),
+          Promise.all((request.reference_audio_paths || []).map(path => readMediaFile(path))),
         ]);
 
-        // Build final request with base64 images
+        // Build final request with base64 data
         const finalRequest: GenerateVideoRequest = {
           project_id: request.project_id,
           prompt: request.prompt,
@@ -100,9 +109,15 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
           first_frame: firstFrame,
           last_frame: lastFrame,
           reference_images: refImages.filter((img): img is string => !!img),
+          reference_videos: refVideos.length > 0 ? refVideos : undefined,
+          reference_audios: refAudios.length > 0 ? refAudios : undefined,
           resolution: request.resolution,
           duration: request.duration,
           aspect_ratio: request.aspect_ratio,
+          generate_audio: request.generate_audio,
+          return_last_frame: request.return_last_frame,
+          watermark: request.watermark,
+          seed: request.seed,
           source_image_id: request.source_image_id,
         };
 

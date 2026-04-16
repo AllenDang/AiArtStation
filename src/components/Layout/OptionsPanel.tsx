@@ -16,7 +16,10 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
 import { ImageDropZone } from "../Generation/ImageDropZone";
+import { MediaDropZone } from "../Generation/MediaDropZone";
+import type { MediaFile } from "../Generation/MediaDropZone";
 import { PainterDialog } from "../Painter";
 import { useImageGeneration, useSettings, useGallery } from "../../hooks";
 import { ASPECT_RATIO_OPTIONS } from "../../types";
@@ -28,6 +31,8 @@ import {
   Images,
   Image as ImageIcon,
   Video,
+  FileVideo,
+  FileAudio,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -50,14 +55,13 @@ const VIDEO_RESOLUTION_OPTIONS = [
   { value: "1080p", label: "1080p" },
 ];
 
-// Video duration options (-1 = auto, 2-12, 15 seconds)
+// Video duration options (-1 = auto, 4-15 seconds for Seedance 2.0)
 const VIDEO_DURATION_OPTIONS = [
   { value: "-1", label: "自动" },
-  ...Array.from({ length: 11 }, (_, i) => ({
-    value: String(i + 2),
-    label: `${i + 2}秒`,
+  ...Array.from({ length: 12 }, (_, i) => ({
+    value: String(i + 4),
+    label: `${i + 4}秒`,
   })),
-  { value: "15", label: "15秒" },
 ];
 
 // Video generation type options
@@ -66,6 +70,7 @@ const VIDEO_GENERATION_TYPE_OPTIONS: { value: VideoGenerationType; label: string
   { value: "image-to-video-first", label: "首帧生成", description: "基于首帧图片生成视频" },
   { value: "image-to-video-both", label: "首尾帧生成", description: "基于首尾帧生成过渡视频" },
   { value: "image-to-video-ref", label: "参考图生成", description: "基于参考图片风格生成" },
+  { value: "multimodal-ref", label: "多模态参考", description: "参考图片+视频+音频生成" },
 ];
 
 interface OptionsPanelProps {
@@ -103,9 +108,16 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
   const [videoFirstFrame, setVideoFirstFrame] = useState<ReferenceImage | null>(null);
   const [videoLastFrame, setVideoLastFrame] = useState<ReferenceImage | null>(null);
   const [videoRefImages, setVideoRefImages] = useState<ReferenceImage[]>([]);
+  const [videoRefVideos, setVideoRefVideos] = useState<MediaFile[]>([]);
+  const [videoRefAudios, setVideoRefAudios] = useState<MediaFile[]>([]);
   const [videoResolution, setVideoResolution] = useState("720p");
   const [videoDuration, setVideoDuration] = useState("5");
   const [videoAspectRatio, setVideoAspectRatio] = useState("16:9");
+  const [generateAudio, setGenerateAudio] = useState(true);
+  const [returnLastFrame, setReturnLastFrame] = useState(false);
+  const [videoSeed, setVideoSeed] = useState("-1");
+  // Tab for multimodal-ref reference area
+  const [multimodalTab, setMultimodalTab] = useState<"image" | "video" | "audio">("image");
 
   // Sequential generation count options
   const sequentialCountOptions = [
@@ -139,6 +151,9 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
       setVideoLastFrame(prev => prev?.file_path === filePath ? null : prev);
       // Clean up video reference images
       setVideoRefImages(prev => prev.filter(img => img.file_path !== filePath));
+      // Clean up video reference videos/audios
+      setVideoRefVideos(prev => prev.filter(f => f.path !== filePath));
+      setVideoRefAudios(prev => prev.filter(f => f.path !== filePath));
     }
   }), []);
 
@@ -229,6 +244,18 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
         toast.error("请上传至少一张参考图片");
         return;
       }
+      if (videoGenerationType === "multimodal-ref") {
+        if (videoRefImages.length === 0 && videoRefVideos.length === 0) {
+          toast.error("多模态参考至少需要一张图片或一个视频");
+          return;
+        }
+        if (videoRefAudios.length > 0 && videoRefImages.length === 0 && videoRefVideos.length === 0) {
+          toast.error("不可单独输入音频，应至少包含1个参考视频或图片");
+          return;
+        }
+      }
+
+      const parsedSeed = parseInt(videoSeed);
 
       // Pass file paths - hooks will read files in background
       const request: GenerateVideoRequestWithPaths = {
@@ -241,9 +268,15 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
           base64: img.base64,
           file_path: img.file_path,
         })),
+        reference_video_paths: videoRefVideos.map(v => v.path),
+        reference_audio_paths: videoRefAudios.map(a => a.path),
         resolution: videoResolution,
         duration: parseInt(videoDuration),
         aspect_ratio: videoAspectRatio,
+        generate_audio: generateAudio,
+        return_last_frame: returnLastFrame,
+        watermark: false,
+        seed: isNaN(parsedSeed) ? -1 : parsedSeed,
       };
 
       onStartVideoTask(request); // No await - returns immediately, task appears instantly
@@ -547,10 +580,88 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
                           images={videoRefImages}
                           onImagesChange={setVideoRefImages}
                           onReadImage={handleReadImage}
-                          maxImages={4}
-                          label={`参考图片 (${videoRefImages.length}/4)`}
+                          maxImages={9}
+                          label={`参考图片 (${videoRefImages.length}/9)`}
                           dropZoneType="video-ref"
                         />
+                      )}
+                      {videoGenerationType === "multimodal-ref" && (
+                        <div className="flex flex-col h-full gap-1">
+                          {/* Tab switcher */}
+                          <div className="flex gap-1 flex-shrink-0">
+                            <button
+                              onClick={() => setMultimodalTab("image")}
+                              className={cn(
+                                "flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                                multimodalTab === "image"
+                                  ? "bg-primary/20 text-primary"
+                                  : "text-muted-foreground hover:text-foreground"
+                              )}
+                            >
+                              <ImageIcon className="w-3 h-3" />
+                              图片{videoRefImages.length > 0 && ` (${videoRefImages.length})`}
+                            </button>
+                            <button
+                              onClick={() => setMultimodalTab("video")}
+                              className={cn(
+                                "flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                                multimodalTab === "video"
+                                  ? "bg-primary/20 text-primary"
+                                  : "text-muted-foreground hover:text-foreground"
+                              )}
+                            >
+                              <FileVideo className="w-3 h-3" />
+                              视频{videoRefVideos.length > 0 && ` (${videoRefVideos.length})`}
+                            </button>
+                            <button
+                              onClick={() => setMultimodalTab("audio")}
+                              className={cn(
+                                "flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                                multimodalTab === "audio"
+                                  ? "bg-primary/20 text-primary"
+                                  : "text-muted-foreground hover:text-foreground"
+                              )}
+                            >
+                              <FileAudio className="w-3 h-3" />
+                              音频{videoRefAudios.length > 0 && ` (${videoRefAudios.length})`}
+                            </button>
+                          </div>
+                          {/* Tab content */}
+                          <div className="flex-1 min-h-0">
+                            {multimodalTab === "image" && (
+                              <ImageDropZone
+                                images={videoRefImages}
+                                onImagesChange={setVideoRefImages}
+                                onReadImage={handleReadImage}
+                                maxImages={9}
+                                label={`参考图片 (${videoRefImages.length}/9)`}
+                                dropZoneType="video-ref"
+                              />
+                            )}
+                            {multimodalTab === "video" && (
+                              <MediaDropZone
+                                files={videoRefVideos}
+                                onFilesChange={setVideoRefVideos}
+                                maxFiles={3}
+                                extensions={["mp4", "mov"]}
+                                label={`参考视频 (${videoRefVideos.length}/3)`}
+                                mediaType="video"
+                                maxSizeMB={50}
+                              />
+                            )}
+                            {multimodalTab === "audio" && (
+                              <MediaDropZone
+                                files={videoRefAudios}
+                                onFilesChange={setVideoRefAudios}
+                                maxFiles={3}
+                                extensions={["wav", "mp3"]}
+                                label={`参考音频 (${videoRefAudios.length}/3)`}
+                                mediaType="audio"
+                                maxSizeMB={15}
+                              />
+                            )}
+                          </div>
+                        </div>
                       )}
                     </div>
                   )}
@@ -620,6 +731,41 @@ export const OptionsPanel = forwardRef<OptionsPanelHandle, OptionsPanelProps>(fu
                         ))}
                       </SelectContent>
                     </Select>
+                  </div>
+
+                  <div className="flex items-center gap-2 h-8">
+                    <Switch
+                      id="generate-audio"
+                      checked={generateAudio}
+                      onCheckedChange={setGenerateAudio}
+                    />
+                    <Label htmlFor="generate-audio" className="text-xs">
+                      生成音频
+                    </Label>
+                  </div>
+
+                  <div className="flex items-center gap-2 h-8">
+                    <Switch
+                      id="return-last-frame"
+                      checked={returnLastFrame}
+                      onCheckedChange={setReturnLastFrame}
+                    />
+                    <Label htmlFor="return-last-frame" className="text-xs">
+                      返回尾帧
+                    </Label>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">种子</Label>
+                    <Input
+                      type="number"
+                      value={videoSeed}
+                      onChange={(e) => setVideoSeed(e.target.value)}
+                      className="w-24 h-8"
+                      min={-1}
+                      max={4294967295}
+                      placeholder="-1"
+                    />
                   </div>
 
                   <div className="ml-auto">
