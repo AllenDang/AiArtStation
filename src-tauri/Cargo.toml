@@ -41,6 +41,11 @@ mp4parse = "0.17"   # MP4 container parsing
 h264-reader = "0.8" # H.264 NAL parsing
 openh264 = "0.9"    # H.264 decoding
 
+# Audio extraction and stem separation
+symphonia = { version = "0.5", features = ["isomp4", "aac"] }  # Extract audio from MP4
+hound = "3.5"                                                 # Write WAV files
+stem-splitter-core = "1.2"                                    # Vocal/BGM separation via HTDemucs
+
 # Encryption
 aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", features = ["simple"] }

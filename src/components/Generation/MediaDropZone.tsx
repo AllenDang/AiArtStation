@@ -59,14 +59,15 @@ export function MediaDropZone({
       if (files.length >= maxFiles) return;
 
       // Check for JSON data (from workspace video cards)
-      if (mediaType === "video") {
-        const jsonData = e.dataTransfer.getData("application/json") || e.dataTransfer.getData("text/plain");
-        if (jsonData) {
-          try {
-            const dragData = JSON.parse(jsonData);
-            if (dragData.type === "ai-artstation-video" && dragData.file_path) {
-              const videoData = dragData as VideoDragData;
-              // Duplicate check by file_path
+      const jsonData = e.dataTransfer.getData("application/json") || e.dataTransfer.getData("text/plain");
+      if (jsonData) {
+        try {
+          const dragData = JSON.parse(jsonData);
+          if (dragData.type === "ai-artstation-video") {
+            const videoData = dragData as VideoDragData;
+
+            if (mediaType === "video" && videoData.file_path) {
+              // Video mode: add video file as reference
               if (files.some(f => f.path === videoData.file_path)) return;
 
               const name = videoData.file_path!.split("/").pop() || videoData.file_path!.split("\\").pop() || "video";
@@ -79,9 +80,38 @@ export function MediaDropZone({
               onFilesChange([...files, newFile].slice(0, maxFiles));
               return;
             }
-          } catch {
-            // Not JSON or not our format, continue to file drop handling
+
+            if (mediaType === "audio") {
+              // Audio mode: auto-fill separated vocals and BGM from video
+              const newFiles: MediaFile[] = [];
+
+              if (videoData.vocals_path && !files.some(f => f.path === videoData.vocals_path)) {
+                const vocalsName = videoData.vocals_path.split("/").pop() || videoData.vocals_path.split("\\").pop() || "vocals.wav";
+                newFiles.push({
+                  id: crypto.randomUUID(),
+                  path: videoData.vocals_path,
+                  name: `🎤 ${vocalsName}`,
+                });
+              }
+
+              if (videoData.bgm_path && !files.some(f => f.path === videoData.bgm_path)) {
+                const bgmName = videoData.bgm_path.split("/").pop() || videoData.bgm_path.split("\\").pop() || "bgm.wav";
+                newFiles.push({
+                  id: crypto.randomUUID(),
+                  path: videoData.bgm_path,
+                  name: `🎵 ${bgmName}`,
+                });
+              }
+
+              if (newFiles.length > 0) {
+                onFilesChange([...files, ...newFiles].slice(0, maxFiles));
+                return;
+              }
+              // No separated audio available — fall through to file drop handling
+            }
           }
+        } catch {
+          // Not JSON or not our format, continue to file drop handling
         }
       }
 
@@ -284,6 +314,7 @@ export function MediaDropZone({
           <div className="h-full flex flex-col items-center justify-center text-center">
             <Icon className="h-6 w-6 text-muted-foreground stroke-1" />
             <p className="mt-1 text-xs text-muted-foreground">
+              拖放视频自动分离音轨，或{" "}
               <button
                 onClick={handleSelectFiles}
                 className="text-primary hover:underline"

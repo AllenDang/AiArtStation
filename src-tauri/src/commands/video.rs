@@ -3,8 +3,12 @@ use crate::commands::generation::DbState;
 use crate::storage::{VideoRecord, VideoStatusUpdate};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
 use uuid::Uuid;
+use std::sync::OnceLock;
+
+/// Global flag to track if the download progress callback has been registered
+static PROGRESS_CB_REGISTERED: OnceLock<()> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Video {
@@ -16,6 +20,8 @@ pub struct Video {
     pub last_frame_thumbnail: Option<String>,
     pub first_frame_path: Option<String>,
     pub last_frame_path: Option<String>,
+    pub vocals_path: Option<String>,
+    pub bgm_path: Option<String>,
     pub prompt: String,
     pub model: String,
     pub generation_type: String,
@@ -203,6 +209,8 @@ pub async fn generate_video(
         last_frame_thumbnail: None,
         first_frame_path: None,
         last_frame_path: None,
+        vocals_path: None,
+        bgm_path: None,
         prompt: request.prompt,
         model: config.video_model,
         generation_type: request.generation_type,
@@ -302,6 +310,8 @@ pub async fn poll_video_task(
                 last_frame_thumbnail: downloaded.as_ref().and_then(|d| d.last_frame_thumbnail.as_deref()),
                 first_frame_path: downloaded.as_ref().and_then(|d| d.first_frame_path.as_deref()),
                 last_frame_path: downloaded.as_ref().and_then(|d| d.last_frame_path.as_deref()),
+                vocals_path: downloaded.as_ref().and_then(|d| d.vocals_path.as_deref()),
+                bgm_path: downloaded.as_ref().and_then(|d| d.bgm_path.as_deref()),
                 resolution: status_response.resolution.as_deref(),
                 duration: status_response.duration,
                 fps: status_response.framespersecond,
@@ -423,6 +433,13 @@ pub async fn delete_video(
             if let Some(last_frame_path) = record.last_frame_path {
                 let _ = std::fs::remove_file(&last_frame_path);
             }
+            // Delete separated audio files
+            if let Some(vocals_path) = record.vocals_path {
+                let _ = std::fs::remove_file(&vocals_path);
+            }
+            if let Some(bgm_path) = record.bgm_path {
+                let _ = std::fs::remove_file(&bgm_path);
+            }
         }
     }
 
@@ -449,6 +466,103 @@ pub async fn remove_video_tag(
     db.remove_video_asset_type(&id, &asset_type).map_err(|e| e.to_string())
 }
 
+// ============================================================================
+// Stem Model Management Commands
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StemModelStatus {
+    pub downloaded: bool,
+    pub model_size_mb: f64,
+    pub cache_path: String,
+}
+
+/// Check if the stem separation model is already downloaded
+#[tauri::command]
+pub async fn check_stem_model_status() -> Result<StemModelStatus, String> {
+    // Replicate the path logic from stem-splitter-core to check if model exists
+    let cache_dir = stem_splitter_core::io::paths::models_cache_dir()
+        .map_err(|e| format!("Failed to get cache dir: {:?}", e))?;
+
+    let model_path = find_model_file(&cache_dir);
+
+    match model_path {
+        Some(path) => {
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            Ok(StemModelStatus {
+                downloaded: true,
+                model_size_mb: size as f64 / (1024.0 * 1024.0),
+                cache_path: cache_dir.to_string_lossy().to_string(),
+            })
+        }
+        None => {
+            Ok(StemModelStatus {
+                downloaded: false,
+                model_size_mb: 0.0,
+                cache_path: cache_dir.to_string_lossy().to_string(),
+            })
+        }
+    }
+}
+
+/// Download the stem separation model with progress events emitted to frontend
+#[tauri::command]
+pub async fn download_stem_model(app: tauri::AppHandle) -> Result<(), String> {
+    // Register progress callback once (OnceLock ensures this only runs once per process)
+    PROGRESS_CB_REGISTERED.get_or_init(|| {
+        let app_handle = app.clone();
+        stem_splitter_core::set_download_progress_callback(move |downloaded, total| {
+            let _ = app_handle.emit("stem-model-download-progress", (downloaded, total));
+        });
+    });
+
+    // Run the blocking download in a background thread
+    tokio::task::spawn_blocking(move || {
+        stem_splitter_core::prepare_model("htdemucs_ort_v1", None)
+            .map_err(|e| format!("Model download failed: {:?}", e))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// Delete the downloaded stem model to free disk space
+#[tauri::command]
+pub async fn delete_stem_model() -> Result<(), String> {
+    let cache_dir = stem_splitter_core::io::paths::models_cache_dir()
+        .map_err(|e| format!("Failed to get cache dir: {:?}", e))?;
+
+    if let Some(path) = find_model_file(&cache_dir) {
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("Failed to delete model: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Find the HTDemucs model file in the cache directory
+fn find_model_file(cache_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    if !cache_dir.exists() {
+        return None;
+    }
+    // Model files are named like "HTDemucs-ORT-{hash8}.ort"
+    std::fs::read_dir(cache_dir).ok()?.find_map(|entry| {
+        let entry = entry.ok()?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".ort") && name.starts_with("HTDemucs") {
+            Some(entry.path())
+        } else {
+            None
+        }
+    })
+}
+
+/// Check if the stem model is ready for use (downloaded and available)
+fn is_stem_model_ready() -> bool {
+    stem_splitter_core::io::paths::models_cache_dir()
+        .ok()
+        .and_then(|dir| find_model_file(&dir))
+        .is_some()
+}
+
 fn map_to_video(record: VideoRecord) -> Video {
     Video {
         id: record.id,
@@ -459,6 +573,8 @@ fn map_to_video(record: VideoRecord) -> Video {
         last_frame_thumbnail: record.last_frame_thumbnail,
         first_frame_path: record.first_frame_path,
         last_frame_path: record.last_frame_path,
+        vocals_path: record.vocals_path,
+        bgm_path: record.bgm_path,
         prompt: record.prompt,
         model: record.model,
         generation_type: record.generation_type,
@@ -483,6 +599,8 @@ struct DownloadedVideo {
     last_frame_thumbnail: Option<String>,
     first_frame_path: Option<String>,
     last_frame_path: Option<String>,
+    vocals_path: Option<String>,
+    bgm_path: Option<String>,
 }
 
 async fn download_video(url: &str, output_dir: &str, video_id: &str, organize_by_date: bool) -> Result<DownloadedVideo, String> {
@@ -507,12 +625,22 @@ async fn download_video(url: &str, output_dir: &str, video_id: &str, organize_by
         let file_path = path.to_string_lossy().to_string();
         // Extract frames from existing video
         let frames = extract_video_frames(&file_path).ok();
+        // Separate audio stems from existing video
+        let stems = match separate_audio_stems(&file_path) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("Audio stem separation failed for {}: {}", file_path, e);
+                None
+            }
+        };
         return Ok(DownloadedVideo {
             file_path,
             first_frame_thumbnail: frames.as_ref().and_then(|f| f.first_frame_thumbnail.clone()),
             last_frame_thumbnail: frames.as_ref().and_then(|f| f.last_frame_thumbnail.clone()),
             first_frame_path: frames.as_ref().and_then(|f| f.first_frame_path.clone()),
             last_frame_path: frames.as_ref().and_then(|f| f.last_frame_path.clone()),
+            vocals_path: stems.as_ref().and_then(|s| s.vocals_path.clone()),
+            bgm_path: stems.as_ref().and_then(|s| s.bgm_path.clone()),
         });
     }
 
@@ -532,12 +660,23 @@ async fn download_video(url: &str, output_dir: &str, video_id: &str, organize_by
     // Extract first and last frames from the video
     let frames = extract_video_frames(&file_path).ok();
 
+    // Separate audio stems (vocals + BGM) from the video
+    let stems = match separate_audio_stems(&file_path) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("Audio stem separation failed for {}: {}", file_path, e);
+            None
+        }
+    };
+
     Ok(DownloadedVideo {
         file_path,
         first_frame_thumbnail: frames.as_ref().and_then(|f| f.first_frame_thumbnail.clone()),
         last_frame_thumbnail: frames.as_ref().and_then(|f| f.last_frame_thumbnail.clone()),
         first_frame_path: frames.as_ref().and_then(|f| f.first_frame_path.clone()),
         last_frame_path: frames.as_ref().and_then(|f| f.last_frame_path.clone()),
+        vocals_path: stems.as_ref().and_then(|s| s.vocals_path.clone()),
+        bgm_path: stems.as_ref().and_then(|s| s.bgm_path.clone()),
     })
 }
 
@@ -923,6 +1062,196 @@ fn add_start_code(nalu: &[u8]) -> Vec<u8> {
     result
 }
 
+/// Result of separating audio stems from a video
+#[derive(Debug)]
+struct SeparatedStems {
+    vocals_path: Option<String>,
+    bgm_path: Option<String>,
+}
+
+/// Extract audio from MP4 and separate into vocals and BGM using stem-splitter-core.
+/// Only runs if the stem model has been downloaded via Settings.
+/// Returns None-filled SeparatedStems on any failure (silent degradation).
+fn separate_audio_stems(video_path: &str) -> Result<SeparatedStems, String> {
+    use std::path::Path;
+
+    // Skip if the model hasn't been downloaded yet
+    if !is_stem_model_ready() {
+        return Ok(SeparatedStems {
+            vocals_path: None,
+            bgm_path: None,
+        });
+    }
+
+    let video_stem = Path::new(video_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("video");
+    let video_dir = Path::new(video_path)
+        .parent()
+        .ok_or("Cannot get video directory")?;
+
+    let vocals_path = video_dir.join(format!("{}_vocals.wav", video_stem));
+    let bgm_path = video_dir.join(format!("{}_bgm.wav", video_stem));
+
+    // Skip if already separated
+    if vocals_path.exists() && bgm_path.exists() {
+        return Ok(SeparatedStems {
+            vocals_path: Some(vocals_path.to_string_lossy().to_string()),
+            bgm_path: Some(bgm_path.to_string_lossy().to_string()),
+        });
+    }
+
+    // Step 1: Extract audio from MP4 to a temporary WAV file
+    let raw_audio_path = video_dir.join(format!("{}_audio_raw.wav", video_stem));
+    extract_audio_from_mp4(video_path, raw_audio_path.to_str().unwrap())?;
+
+    // Step 2: Use stem-splitter-core to separate vocals and accompaniment
+    // Output to a temp directory, then move the files we need
+    let output_dir = video_dir.join(format!("{}_stems", video_stem));
+    let output_dir_str = output_dir.to_string_lossy().to_string();
+
+    let options = stem_splitter_core::SplitOptions {
+        output_dir: output_dir_str.clone(),
+        ..Default::default()
+    };
+
+    let split_result = stem_splitter_core::split_file(raw_audio_path.to_str().unwrap(), options)
+        .map_err(|e| format!("Stem separation failed: {:?}", e))?;
+
+    // Step 3: Move separated stems to final paths and clean up
+    // split_result contains the actual output paths
+    if std::path::Path::new(&split_result.vocals_path).exists() {
+        std::fs::rename(&split_result.vocals_path, &vocals_path)
+            .map_err(|e| format!("Failed to move vocals: {}", e))?;
+    }
+
+    // Use "other" stem as BGM (contains accompaniment/music/effects)
+    if std::path::Path::new(&split_result.other_path).exists() {
+        std::fs::rename(&split_result.other_path, &bgm_path)
+            .map_err(|e| format!("Failed to move bgm: {}", e))?;
+    }
+
+    // Clean up temporary files (raw audio, drums, bass, stems dir)
+    let _ = std::fs::remove_file(&raw_audio_path);
+    let _ = std::fs::remove_file(&split_result.drums_path);
+    let _ = std::fs::remove_file(&split_result.bass_path);
+    let _ = std::fs::remove_dir_all(&output_dir);
+
+    Ok(SeparatedStems {
+        vocals_path: if vocals_path.exists() { Some(vocals_path.to_string_lossy().to_string()) } else { None },
+        bgm_path: if bgm_path.exists() { Some(bgm_path.to_string_lossy().to_string()) } else { None },
+    })
+}
+
+/// Extract audio track from an MP4 file and write it as a WAV file using symphonia + hound.
+fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(), String> {
+    use std::fs::File;
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::codecs::DecoderOptions;
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let file = File::open(video_path)
+        .map_err(|e| format!("Failed to open video for audio extraction: {}", e))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    hint.with_extension("mp4");
+
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .map_err(|e| format!("Failed to probe MP4: {}", e))?;
+
+    let mut format_reader = probed.format;
+
+    // Find the audio track by checking for known audio codecs
+    let audio_track = format_reader
+        .tracks()
+        .iter()
+        .find(|t| {
+            let codec = t.codec_params.codec;
+            codec == symphonia::core::codecs::CODEC_TYPE_AAC
+                || codec == symphonia::core::codecs::CODEC_TYPE_MP3
+                || codec == symphonia::core::codecs::CODEC_TYPE_VORBIS
+                || codec == symphonia::core::codecs::CODEC_TYPE_FLAC
+                || codec == symphonia::core::codecs::CODEC_TYPE_PCM_F32LE
+                || codec == symphonia::core::codecs::CODEC_TYPE_PCM_S16LE
+                || (codec != symphonia::core::codecs::CODEC_TYPE_NULL
+                    && t.codec_params.channels.is_some()
+                    && t.codec_params.sample_rate.is_some())
+        })
+        .ok_or("No audio track found in video")?;
+
+    let track_id = audio_track.id;
+    let codec_params = audio_track.codec_params.clone();
+
+    let sample_rate = codec_params.sample_rate
+        .ok_or("Audio track has no sample rate")?;
+    let channels = codec_params.channels
+        .map(|c| c.count() as u16)
+        .unwrap_or(1);
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&codec_params, &DecoderOptions::default())
+        .map_err(|e| format!("Failed to create audio decoder: {}", e))?;
+
+    // Collect all samples
+    let mut all_samples: Vec<f32> = Vec::new();
+
+    loop {
+        let packet = match format_reader.next_packet() {
+            Ok(packet) => packet,
+            Err(symphonia::core::errors::Error::IoError(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(_) => break,
+        };
+
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        let decoded = match decoder.decode(&packet) {
+            Ok(decoded) => decoded,
+            Err(_) => continue,
+        };
+
+        let spec = *decoded.spec();
+        let num_frames = decoded.capacity();
+
+        let mut sample_buf = SampleBuffer::<f32>::new(num_frames as u64, spec);
+        sample_buf.copy_interleaved_ref(decoded);
+        all_samples.extend_from_slice(sample_buf.samples());
+    }
+
+    if all_samples.is_empty() {
+        return Err("No audio samples extracted from video".to_string());
+    }
+
+    // Write WAV using hound
+    let wav_spec = hound::WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+
+    let mut writer = hound::WavWriter::create(output_wav_path, wav_spec)
+        .map_err(|e| format!("Failed to create WAV writer: {}", e))?;
+
+    for sample in &all_samples {
+        writer.write_sample(*sample)
+            .map_err(|e| format!("Failed to write WAV sample: {}", e))?;
+    }
+
+    writer.finalize()
+        .map_err(|e| format!("Failed to finalize WAV: {}", e))?;
+
+    Ok(())
+}
+
 /// Generate a base64 thumbnail from an image file using image crate
 fn generate_thumbnail_from_image(image_path: &str) -> Result<String, String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
@@ -941,4 +1270,59 @@ fn generate_thumbnail_from_image(image_path: &str) -> Result<String, String> {
 
     let encoded = STANDARD.encode(buffer.into_inner());
     Ok(format!("data:image/jpeg;base64,{}", encoded))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_separate_audio_stems() {
+        let video_path = "/Users/allen/Pictures/AI-ArtStation/2026-04/video_e3a8b98e.mp4";
+        if !std::path::Path::new(video_path).exists() {
+            eprintln!("Test video not found, skipping");
+            return;
+        }
+
+        // Clean up any previous test artifacts
+        let dir = std::path::Path::new(video_path).parent().unwrap();
+        let _ = std::fs::remove_file(dir.join("video_e3a8b98e_vocals.wav"));
+        let _ = std::fs::remove_file(dir.join("video_e3a8b98e_bgm.wav"));
+
+        let result = separate_audio_stems(video_path);
+        println!("separate_audio_stems result: {:?}", result);
+        match &result {
+            Ok(stems) => {
+                println!("vocals_path: {:?}", stems.vocals_path);
+                println!("bgm_path: {:?}", stems.bgm_path);
+            }
+            Err(e) => {
+                println!("ERROR: {}", e);
+            }
+        }
+        assert!(result.is_ok(), "Stem separation failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_extract_audio_from_mp4() {
+        let video_path = "/Users/allen/Pictures/AI-ArtStation/2026-04/video_e3a8b98e.mp4";
+        if !std::path::Path::new(video_path).exists() {
+            eprintln!("Test video not found, skipping");
+            return;
+        }
+
+        let output_wav = "/tmp/test_audio_extract.wav";
+        let _ = std::fs::remove_file(output_wav);
+
+        let result = extract_audio_from_mp4(video_path, output_wav);
+        println!("extract_audio_from_mp4 result: {:?}", result);
+        assert!(result.is_ok(), "Audio extraction failed: {:?}", result.err());
+        assert!(std::path::Path::new(output_wav).exists(), "WAV file was not created");
+
+        let metadata = std::fs::metadata(output_wav).unwrap();
+        println!("WAV file size: {} bytes", metadata.len());
+        assert!(metadata.len() > 100, "WAV file is too small");
+
+        let _ = std::fs::remove_file(output_wav);
+    }
 }

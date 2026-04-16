@@ -60,6 +60,8 @@ export interface Video {
   last_frame_thumbnail?: string;   // Base64 thumbnail for preview
   first_frame_path?: string;       // Full-res frame file path
   last_frame_path?: string;        // Full-res frame file path
+  vocals_path?: string;            // Separated vocals audio path
+  bgm_path?: string;               // Separated BGM/accompaniment audio path
   prompt: string;
   model: string;
   generation_type: VideoGenerationType;
@@ -85,6 +87,8 @@ export interface VideoDragData {
   last_frame_path?: string;
   first_frame_thumbnail?: string;  // For preview
   last_frame_thumbnail?: string;
+  vocals_path?: string;            // Separated vocals audio path
+  bgm_path?: string;               // Separated BGM audio path
   prompt: string;
 }
 

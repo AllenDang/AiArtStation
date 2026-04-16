@@ -72,6 +72,8 @@ export function VideoTaskCard({ video, onRetry, onDismiss, onClick, onRemoveTag 
       last_frame_path: video.last_frame_path,
       first_frame_thumbnail: video.first_frame_thumbnail,
       last_frame_thumbnail: video.last_frame_thumbnail,
+      vocals_path: video.vocals_path,
+      bgm_path: video.bgm_path,
       prompt: video.prompt,
     };
 

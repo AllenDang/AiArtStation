@@ -1,5 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,7 +31,17 @@ import {
   FolderOpen,
   Trash2,
   ArrowLeft,
+  Music,
+  Download,
+  CheckCircle2,
+  AlertCircle,
 } from "lucide-react";
+
+interface StemModelStatus {
+  downloaded: boolean;
+  model_size_mb: number;
+  cache_path: string;
+}
 
 interface SettingsPageProps {
   onBack?: () => void;
@@ -59,6 +71,12 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
   const [showToken, setShowToken] = useState(false);
   const [testing, setTesting] = useState(false);
 
+  // Stem model state
+  const [stemStatus, setStemStatus] = useState<StemModelStatus | null>(null);
+  const [stemDownloading, setStemDownloading] = useState(false);
+  const [stemProgress, setStemProgress] = useState<{ downloaded: number; total: number } | null>(null);
+  const [stemError, setStemError] = useState<string | null>(null);
+
   useEffect(() => {
     loadSettings().then((cfg) => {
       if (cfg) {
@@ -81,6 +99,52 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
       });
     }
   }, [getDefaultOutputDir, formData.output_directory]);
+
+  // Load stem model status on mount
+  useEffect(() => {
+    invoke<StemModelStatus>("check_stem_model_status")
+      .then(setStemStatus)
+      .catch(() => {});
+  }, []);
+
+  // Listen for download progress events
+  useEffect(() => {
+    const unlisten = listen<[number, number]>("stem-model-download-progress", (event) => {
+      const [downloaded, total] = event.payload;
+      setStemProgress({ downloaded, total });
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
+  const handleDownloadStemModel = useCallback(async () => {
+    setStemDownloading(true);
+    setStemError(null);
+    setStemProgress(null);
+    try {
+      await invoke("download_stem_model");
+      const status = await invoke<StemModelStatus>("check_stem_model_status");
+      setStemStatus(status);
+      toast.success("音频分离模型下载完成");
+    } catch (e) {
+      setStemError(String(e));
+      toast.error(`模型下载失败: ${e}`);
+    } finally {
+      setStemDownloading(false);
+      setStemProgress(null);
+    }
+  }, []);
+
+  const handleDeleteStemModel = useCallback(async () => {
+    if (!confirm("确定要删除音频分离模型吗？删除后需要重新下载才能使用音频分离功能。")) return;
+    try {
+      await invoke("delete_stem_model");
+      const status = await invoke<StemModelStatus>("check_stem_model_status");
+      setStemStatus(status);
+      toast.info("音频分离模型已删除");
+    } catch (e) {
+      toast.error(`删除失败: ${e}`);
+    }
+  }, []);
 
   const handleSave = async () => {
     try {
@@ -320,6 +384,110 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
               </SelectContent>
             </Select>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Audio Stem Separation */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Music className="w-5 h-5" />
+            音频分离模型
+          </CardTitle>
+          <CardDescription>
+            下载 HTDemucs 模型，自动从视频中分离人声和背景音乐。分离后的音轨可作为参考音频使用，保持角色声音和 BGM 的一致性。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Status */}
+          <div className="flex items-center gap-3">
+            {stemStatus?.downloaded ? (
+              <>
+                <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium">模型已就绪</p>
+                  <p className="text-xs text-muted-foreground">
+                    {stemStatus.model_size_mb.toFixed(1)} MB · {stemStatus.cache_path}
+                  </p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground hover:text-destructive"
+                  onClick={handleDeleteStemModel}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              </>
+            ) : (
+              <>
+                <Download className="w-5 h-5 text-muted-foreground flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium">模型未下载</p>
+                  <p className="text-xs text-muted-foreground">
+                    HTDemucs v4 ONNX 模型（约 210 MB）
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Progress bar */}
+          {stemDownloading && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span className="flex items-center gap-1.5">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  {stemProgress && stemProgress.total > 0
+                    ? `下载中 ${(stemProgress.downloaded / 1024 / 1024).toFixed(1)} / ${(stemProgress.total / 1024 / 1024).toFixed(1)} MB`
+                    : "正在连接..."}
+                </span>
+                {stemProgress && stemProgress.total > 0 && (
+                  <span>{Math.round((stemProgress.downloaded / stemProgress.total) * 100)}%</span>
+                )}
+              </div>
+              <div className="h-2 bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary rounded-full transition-all duration-300"
+                  style={{
+                    width: stemProgress && stemProgress.total > 0
+                      ? `${(stemProgress.downloaded / stemProgress.total) * 100}%`
+                      : "0%",
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Error */}
+          {stemError && (
+            <div className="flex items-start gap-2 text-sm text-destructive">
+              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span>{stemError}</span>
+            </div>
+          )}
+
+          {/* Download button */}
+          {!stemStatus?.downloaded && (
+            <Button
+              onClick={handleDownloadStemModel}
+              disabled={stemDownloading}
+            >
+              {stemDownloading ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  下载中...
+                </>
+              ) : stemError ? (
+                "重试下载"
+              ) : (
+                <>
+                  <Download className="w-4 h-4 mr-2" />
+                  下载模型
+                </>
+              )}
+            </Button>
+          )}
         </CardContent>
       </Card>
 

@@ -103,6 +103,8 @@ pub struct VideoRecord {
     pub last_frame_thumbnail: Option<String>,  // Base64 thumbnail of last frame
     pub first_frame_path: Option<String>,      // Full-res first frame image path
     pub last_frame_path: Option<String>,       // Full-res last frame image path
+    pub vocals_path: Option<String>,           // Separated vocals audio path
+    pub bgm_path: Option<String>,              // Separated BGM/accompaniment audio path
     pub prompt: String,
     pub model: String,
     pub generation_type: String, // "text-to-video", "image-to-video-first", "image-to-video-both"
@@ -127,6 +129,8 @@ pub struct VideoStatusUpdate<'a> {
     pub last_frame_thumbnail: Option<&'a str>,
     pub first_frame_path: Option<&'a str>,
     pub last_frame_path: Option<&'a str>,
+    pub vocals_path: Option<&'a str>,
+    pub bgm_path: Option<&'a str>,
     pub resolution: Option<&'a str>,
     pub duration: Option<f64>,
     pub fps: Option<i32>,
@@ -374,6 +378,22 @@ impl Database {
                 "ALTER TABLE videos ADD COLUMN last_frame_path TEXT",
                 [],
             ).context("Failed to add last_frame_path to videos table")?;
+        }
+
+        // Migration: Add vocals_path column for separated vocals audio
+        if !video_columns.contains(&"vocals_path".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE videos ADD COLUMN vocals_path TEXT",
+                [],
+            ).context("Failed to add vocals_path to videos table")?;
+        }
+
+        // Migration: Add bgm_path column for separated BGM audio
+        if !video_columns.contains(&"bgm_path".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE videos ADD COLUMN bgm_path TEXT",
+                [],
+            ).context("Failed to add bgm_path to videos table")?;
         }
 
         // Migration: Add asset_types column to videos (JSON array for tags)
@@ -913,8 +933,8 @@ impl Database {
     pub fn insert_video(&self, record: &VideoRecord) -> Result<()> {
         let asset_types_json = serde_json::to_string(&record.asset_types)?;
         self.conn.execute(
-            "INSERT INTO videos (id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+            "INSERT INTO videos (id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 record.id,
                 record.project_id,
@@ -924,6 +944,8 @@ impl Database {
                 record.last_frame_thumbnail,
                 record.first_frame_path,
                 record.last_frame_path,
+                record.vocals_path,
+                record.bgm_path,
                 record.prompt,
                 record.model,
                 record.generation_type,
@@ -945,7 +967,7 @@ impl Database {
 
     pub fn get_videos_by_project(&self, project_id: &str, limit: i64, offset: i64) -> Result<Vec<VideoRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
+            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
              FROM videos
              WHERE project_id = ?1
              ORDER BY created_at DESC
@@ -960,7 +982,7 @@ impl Database {
         // SQLite JSON query: asset_types contains the given type
         let pattern = format!("%\"{}%", asset_type);
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
+            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
              FROM videos
              WHERE project_id = ?1 AND asset_types LIKE ?2
              ORDER BY created_at DESC
@@ -983,7 +1005,7 @@ impl Database {
 
     pub fn get_video_by_id(&self, id: &str) -> Result<Option<VideoRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
+            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
              FROM videos WHERE id = ?1"
         )?;
 
@@ -997,7 +1019,7 @@ impl Database {
 
     pub fn get_pending_videos(&self) -> Result<Vec<VideoRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
+            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
              FROM videos
              WHERE status IN ('pending', 'processing')
              ORDER BY created_at ASC"
@@ -1015,8 +1037,8 @@ impl Database {
         };
 
         let rows = self.conn.execute(
-            "UPDATE videos SET status = ?1, file_path = COALESCE(?2, file_path), first_frame_thumbnail = COALESCE(?3, first_frame_thumbnail), last_frame_thumbnail = COALESCE(?4, last_frame_thumbnail), first_frame_path = COALESCE(?5, first_frame_path), last_frame_path = COALESCE(?6, last_frame_path), resolution = COALESCE(?7, resolution), duration = COALESCE(?8, duration), fps = COALESCE(?9, fps), tokens_used = COALESCE(?10, tokens_used), error_message = ?11, completed_at = COALESCE(?12, completed_at) WHERE id = ?13",
-            params![update.status, update.file_path, update.first_frame_thumbnail, update.last_frame_thumbnail, update.first_frame_path, update.last_frame_path, update.resolution, update.duration, update.fps, update.tokens_used, update.error_message, completed_at, id],
+            "UPDATE videos SET status = ?1, file_path = COALESCE(?2, file_path), first_frame_thumbnail = COALESCE(?3, first_frame_thumbnail), last_frame_thumbnail = COALESCE(?4, last_frame_thumbnail), first_frame_path = COALESCE(?5, first_frame_path), last_frame_path = COALESCE(?6, last_frame_path), vocals_path = COALESCE(?7, vocals_path), bgm_path = COALESCE(?8, bgm_path), resolution = COALESCE(?9, resolution), duration = COALESCE(?10, duration), fps = COALESCE(?11, fps), tokens_used = COALESCE(?12, tokens_used), error_message = ?13, completed_at = COALESCE(?14, completed_at) WHERE id = ?15",
+            params![update.status, update.file_path, update.first_frame_thumbnail, update.last_frame_thumbnail, update.first_frame_path, update.last_frame_path, update.vocals_path, update.bgm_path, update.resolution, update.duration, update.fps, update.tokens_used, update.error_message, completed_at, id],
         )?;
         Ok(rows > 0)
     }
@@ -1039,9 +1061,9 @@ impl Database {
     }
 
     fn map_video_row(row: &rusqlite::Row) -> rusqlite::Result<VideoRecord> {
-        let created_at_str: String = row.get(19)?;
-        let completed_at_str: Option<String> = row.get(20)?;
-        let asset_types_json: String = row.get::<_, Option<String>>(21)?.unwrap_or_else(|| "[]".to_string());
+        let created_at_str: String = row.get(21)?;
+        let completed_at_str: Option<String> = row.get(22)?;
+        let asset_types_json: String = row.get::<_, Option<String>>(23)?.unwrap_or_else(|| "[]".to_string());
         Ok(VideoRecord {
             id: row.get(0)?,
             project_id: row.get(1)?,
@@ -1051,17 +1073,19 @@ impl Database {
             last_frame_thumbnail: row.get(5)?,
             first_frame_path: row.get(6)?,
             last_frame_path: row.get(7)?,
-            prompt: row.get(8)?,
-            model: row.get(9)?,
-            generation_type: row.get(10)?,
-            source_image_id: row.get(11)?,
-            resolution: row.get(12)?,
-            duration: row.get(13)?,
-            fps: row.get(14)?,
-            aspect_ratio: row.get(15)?,
-            status: row.get(16)?,
-            error_message: row.get(17)?,
-            tokens_used: row.get(18)?,
+            vocals_path: row.get(8)?,
+            bgm_path: row.get(9)?,
+            prompt: row.get(10)?,
+            model: row.get(11)?,
+            generation_type: row.get(12)?,
+            source_image_id: row.get(13)?,
+            resolution: row.get(14)?,
+            duration: row.get(15)?,
+            fps: row.get(16)?,
+            aspect_ratio: row.get(17)?,
+            status: row.get(18)?,
+            error_message: row.get(19)?,
+            tokens_used: row.get(20)?,
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -1097,16 +1121,31 @@ impl Database {
         }
 
         // Cleanup videos (only completed ones with file_path)
-        // Also fetch frame paths so we can delete them
+        // Also fetch frame and audio paths so we can delete them
+        struct VideoCleanupRow {
+            id: String,
+            file_path: String,
+            first_frame_path: Option<String>,
+            last_frame_path: Option<String>,
+            vocals_path: Option<String>,
+            bgm_path: Option<String>,
+        }
         let mut stmt = self.conn.prepare(
-            "SELECT id, file_path, first_frame_path, last_frame_path FROM videos WHERE file_path IS NOT NULL"
+            "SELECT id, file_path, first_frame_path, last_frame_path, vocals_path, bgm_path FROM videos WHERE file_path IS NOT NULL"
         )?;
-        let video_rows: Vec<(String, String, Option<String>, Option<String>)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
+        let video_rows: Vec<VideoCleanupRow> = stmt
+            .query_map([], |row| Ok(VideoCleanupRow {
+                id: row.get(0)?,
+                file_path: row.get(1)?,
+                first_frame_path: row.get(2)?,
+                last_frame_path: row.get(3)?,
+                vocals_path: row.get(4)?,
+                bgm_path: row.get(5)?,
+            }))?
             .filter_map(|r| r.ok())
             .collect();
 
-        for (id, file_path, first_frame_path, last_frame_path) in video_rows {
+        for VideoCleanupRow { id, file_path, first_frame_path, last_frame_path, vocals_path, bgm_path } in video_rows {
             if !std::path::Path::new(&file_path).exists() {
                 // Delete frame files if they exist
                 if let Some(first_path) = first_frame_path {
@@ -1114,6 +1153,13 @@ impl Database {
                 }
                 if let Some(last_path) = last_frame_path {
                     let _ = std::fs::remove_file(&last_path);
+                }
+                // Delete separated audio files if they exist
+                if let Some(vocals) = vocals_path {
+                    let _ = std::fs::remove_file(&vocals);
+                }
+                if let Some(bgm) = bgm_path {
+                    let _ = std::fs::remove_file(&bgm);
                 }
                 // Delete database record
                 if self.delete_video(&id)? {
