@@ -1144,6 +1144,29 @@ fn separate_audio_stems(video_path: &str) -> Result<SeparatedStems, String> {
     })
 }
 
+/// Resample interleaved audio from one sample rate to another using linear interpolation.
+fn resample_linear(samples: &[f32], channels: u16, from_rate: u32, to_rate: u32) -> Vec<f32> {
+    let ch = channels as usize;
+    let in_frames = samples.len() / ch;
+    let ratio = from_rate as f64 / to_rate as f64;
+    let out_frames = (in_frames as f64 / ratio).ceil() as usize;
+    let mut out = Vec::with_capacity(out_frames * ch);
+
+    for i in 0..out_frames {
+        let src_pos = i as f64 * ratio;
+        let idx = src_pos as usize;
+        let frac = (src_pos - idx as f64) as f32;
+
+        for c in 0..ch {
+            let s0 = samples.get(idx * ch + c).copied().unwrap_or(0.0);
+            let s1 = samples.get((idx + 1) * ch + c).copied().unwrap_or(s0);
+            out.push(s0 + (s1 - s0) * frac);
+        }
+    }
+
+    out
+}
+
 /// Extract audio track from an MP4 file and write it as a WAV file using symphonia + hound.
 fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(), String> {
     use std::fs::File;
@@ -1230,10 +1253,19 @@ fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(),
         return Err("No audio samples extracted from video".to_string());
     }
 
+    // Resample to 44100 Hz if needed — stem-splitter-core expects 44.1kHz input
+    // but does not resample internally, causing playback speed mismatch
+    let target_rate = 44100u32;
+    let (final_samples, final_rate) = if sample_rate != target_rate {
+        (resample_linear(&all_samples, channels, sample_rate, target_rate), target_rate)
+    } else {
+        (all_samples, sample_rate)
+    };
+
     // Write WAV using hound
     let wav_spec = hound::WavSpec {
         channels,
-        sample_rate,
+        sample_rate: final_rate,
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,
     };
@@ -1241,7 +1273,7 @@ fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(),
     let mut writer = hound::WavWriter::create(output_wav_path, wav_spec)
         .map_err(|e| format!("Failed to create WAV writer: {}", e))?;
 
-    for sample in &all_samples {
+    for sample in &final_samples {
         writer.write_sample(*sample)
             .map_err(|e| format!("Failed to write WAV sample: {}", e))?;
     }
