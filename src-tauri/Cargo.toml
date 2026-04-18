@@ -42,18 +42,21 @@ h264-reader = "0.8" # H.264 NAL parsing
 openh264 = "0.9"    # H.264 decoding
 
 # Audio extraction and stem separation
-symphonia = { version = "0.5", features = ["isomp4", "aac"] }  # Extract audio from MP4
-hound = "3.5"                                                 # Write WAV files
-stem-splitter-core = "1.2"                                    # Vocal/BGM separation via HTDemucs
+symphonia = { version = "0.5", features = [
+  "isomp4",
+  "aac",
+] } # Extract audio from MP4
+hound = "3.5" # Write WAV files
+stem-splitter-core = "1.2" # Vocal/BGM separation via HTDemucs
 
 # Encryption
 aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", features = ["simple"] }
-sha2 = "0.10"
+sha2 = "0.11"
 rand = "0.10"
 
 # Database
-rusqlite = { version = "0.38", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
@@ -65,4 +68,4 @@ hostname = "0.4"
 opener = "0.8"
 
 [dev-dependencies]
-tempfile = "3.23.0"
+tempfile = "3.27.0"
