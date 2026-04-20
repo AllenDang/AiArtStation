@@ -52,7 +52,7 @@ stem-splitter-core = "1.2" # Vocal/BGM separation via HTDemucs
 # Encryption
 aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", features = ["simple"] }
-sha2 = "0.11"
+sha2 = "0.10"
 rand = "0.10"
 
 # Database

@@ -1211,18 +1211,17 @@ fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(),
     let track_id = audio_track.id;
     let codec_params = audio_track.codec_params.clone();
 
-    let sample_rate = codec_params.sample_rate
-        .ok_or("Audio track has no sample rate")?;
-    let channels = codec_params.channels
-        .map(|c| c.count() as u16)
-        .unwrap_or(1);
-
     let mut decoder = symphonia::default::get_codecs()
         .make(&codec_params, &DecoderOptions::default())
         .map_err(|e| format!("Failed to create audio decoder: {}", e))?;
 
-    // Collect all samples
+    // Collect all samples. Derive sample_rate/channels from the actual decoded
+    // spec — container metadata can lie (e.g. AAC-HE/SBR reports base rate while
+    // the decoder outputs at 2× after SBR upsampling), which caused vocals to
+    // play back slowed down and pitched lower.
     let mut all_samples: Vec<f32> = Vec::new();
+    let mut actual_rate: Option<u32> = None;
+    let mut actual_channels: Option<u16> = None;
 
     loop {
         let packet = match format_reader.next_packet() {
@@ -1242,8 +1241,20 @@ fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(),
         };
 
         let spec = *decoded.spec();
-        let num_frames = decoded.capacity();
+        let pkt_channels = spec.channels.count() as u16;
 
+        // Lock in the true rate/channels from the first successful decode.
+        // Skip packets whose spec changes mid-stream to keep the output coherent.
+        match (actual_rate, actual_channels) {
+            (None, None) => {
+                actual_rate = Some(spec.rate);
+                actual_channels = Some(pkt_channels);
+            }
+            (Some(r), Some(c)) if r != spec.rate || c != pkt_channels => continue,
+            _ => {}
+        }
+
+        let num_frames = decoded.capacity();
         let mut sample_buf = SampleBuffer::<f32>::new(num_frames as u64, spec);
         sample_buf.copy_interleaved_ref(decoded);
         all_samples.extend_from_slice(sample_buf.samples());
@@ -1252,6 +1263,9 @@ fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(),
     if all_samples.is_empty() {
         return Err("No audio samples extracted from video".to_string());
     }
+
+    let sample_rate = actual_rate.ok_or("Failed to determine decoded sample rate")?;
+    let channels = actual_channels.ok_or("Failed to determine decoded channel count")?;
 
     // Resample to 44100 Hz if needed — stem-splitter-core expects 44.1kHz input
     // but does not resample internally, causing playback speed mismatch
