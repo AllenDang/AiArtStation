@@ -1,11 +1,12 @@
-use crate::api::{ApiClient, VideoAudioUrl, VideoContentItem, VideoGenerationRequest, VideoImageUrl, VideoVideoUrl};
-use crate::commands::generation::DbState;
+use crate::commands::generation::AppState;
+use crate::providers::{ReferenceMedia, RequestOptions};
 use crate::storage::{VideoRecord, VideoStatusUpdate};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::sync::OnceLock;
 use tauri::{Emitter, State};
 use uuid::Uuid;
-use std::sync::OnceLock;
 
 /// Global flag to track if the download progress callback has been registered
 static PROGRESS_CB_REGISTERED: OnceLock<()> = OnceLock::new();
@@ -41,21 +42,17 @@ pub struct Video {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateVideoRequest {
     pub project_id: String,
+    pub provider_type: String,
     pub prompt: String,
-    pub generation_type: String, // "text-to-video", "image-to-video-first", "image-to-video-both", "image-to-video-ref", "multimodal-ref"
-    pub first_frame: Option<String>,     // Base64
-    pub last_frame: Option<String>,      // Base64
+    pub first_frame: Option<String>,           // Base64
+    pub last_frame: Option<String>,            // Base64
     pub reference_images: Option<Vec<String>>, // Base64 array for multi-ref
     pub reference_videos: Option<Vec<String>>, // Base64 data URLs for reference videos
     pub reference_audios: Option<Vec<String>>, // Base64 data URLs for reference audios
-    pub resolution: Option<String>,      // "480p", "720p", "1080p"
-    pub duration: Option<i32>,           // -1 (auto), 4-15 seconds
-    pub aspect_ratio: Option<String>,    // "16:9", "4:3", "1:1", etc.
-    pub generate_audio: Option<bool>,    // Generate audio with video (default true)
-    pub return_last_frame: Option<bool>, // Return last frame image (default false)
-    pub watermark: Option<bool>,         // Include watermark (default false)
-    pub seed: Option<i64>,               // Random seed (-1 to 2^32-1)
-    pub source_image_id: Option<String>, // Parent image ID if applicable
+    /// Provider-specific parameters rendered from the manifest.
+    /// Must contain `generation_type` if the manifest exposes one.
+    pub params: Value,
+    pub source_image_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,136 +71,56 @@ pub struct VideoGalleryResponse {
 
 #[tauri::command]
 pub async fn generate_video(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     request: GenerateVideoRequest,
 ) -> Result<GenerateVideoResponse, String> {
-    // Load config
-    let config = {
-        let db = db_state.database.lock().map_err(|e| e.to_string())?;
-        db.load_config().map_err(|e| e.to_string())?
+    // Look up provider + snapshot credentials before network call.
+    let provider_record = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.get_provider(&request.provider_type)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Provider 未配置".to_string())?
     };
 
-    if config.base_url.is_empty() || config.api_token.is_empty() || config.video_model.is_empty() {
-        return Err("API configuration is incomplete. Please configure video model in settings.".to_string());
-    }
+    let model = provider_record
+        .video_model
+        .clone()
+        .ok_or_else(|| "该 Provider 未配置视频模型".to_string())?;
 
-    // Create API client
-    let client = ApiClient::new(&config.base_url, &config.api_token)
-        .map_err(|e| e.to_string())?;
+    let provider = state
+        .registry
+        .get(&provider_record.provider_type)
+        .ok_or_else(|| format!("未知的 Provider 类型: {}", provider_record.provider_type))?;
 
-    // Build content array with clean prompt (params passed as body fields)
-    let mut content = vec![VideoContentItem {
-        content_type: "text".to_string(),
-        text: Some(request.prompt.clone()),
-        image_url: None,
-        video_url: None,
-        audio_url: None,
-        role: None,
-    }];
-
-    // Add media based on generation type
-    match request.generation_type.as_str() {
-        "image-to-video-first" => {
-            if let Some(first_frame) = &request.first_frame {
-                content.push(VideoContentItem {
-                    content_type: "image_url".to_string(),
-                    text: None,
-                    image_url: Some(VideoImageUrl { url: first_frame.clone() }),
-                    video_url: None,
-                    audio_url: None,
-                    role: None, // No role for single first frame
-                });
-            }
-        }
-        "image-to-video-both" => {
-            if let Some(first_frame) = &request.first_frame {
-                content.push(VideoContentItem {
-                    content_type: "image_url".to_string(),
-                    text: None,
-                    image_url: Some(VideoImageUrl { url: first_frame.clone() }),
-                    video_url: None,
-                    audio_url: None,
-                    role: Some("first_frame".to_string()),
-                });
-            }
-            if let Some(last_frame) = &request.last_frame {
-                content.push(VideoContentItem {
-                    content_type: "image_url".to_string(),
-                    text: None,
-                    image_url: Some(VideoImageUrl { url: last_frame.clone() }),
-                    video_url: None,
-                    audio_url: None,
-                    role: Some("last_frame".to_string()),
-                });
-            }
-        }
-        "image-to-video-ref" | "multimodal-ref" => {
-            // Reference images
-            if let Some(ref_images) = &request.reference_images {
-                for img in ref_images {
-                    content.push(VideoContentItem {
-                        content_type: "image_url".to_string(),
-                        text: None,
-                        image_url: Some(VideoImageUrl { url: img.clone() }),
-                        video_url: None,
-                        audio_url: None,
-                        role: Some("reference_image".to_string()),
-                    });
-                }
-            }
-            // Reference videos (multimodal-ref only)
-            if let Some(ref_videos) = &request.reference_videos {
-                for vid in ref_videos {
-                    content.push(VideoContentItem {
-                        content_type: "video_url".to_string(),
-                        text: None,
-                        image_url: None,
-                        video_url: Some(VideoVideoUrl { url: vid.clone() }),
-                        audio_url: None,
-                        role: Some("reference_video".to_string()),
-                    });
-                }
-            }
-            // Reference audios (multimodal-ref only)
-            if let Some(ref_audios) = &request.reference_audios {
-                for aud in ref_audios {
-                    content.push(VideoContentItem {
-                        content_type: "audio_url".to_string(),
-                        text: None,
-                        image_url: None,
-                        video_url: None,
-                        audio_url: Some(VideoAudioUrl { url: aud.clone() }),
-                        role: Some("reference_audio".to_string()),
-                    });
-                }
-            }
-        }
-        _ => {} // text-to-video has no media
-    }
-
-    // Create video task with body-level parameters
-    let api_request = VideoGenerationRequest {
-        model: config.video_model.clone(),
-        content,
-        service_tier: None,
-        resolution: request.resolution.clone(),
-        ratio: request.aspect_ratio.clone(), // Map internal "aspect_ratio" to API "ratio"
-        duration: request.duration,
-        generate_audio: request.generate_audio,
-        return_last_frame: request.return_last_frame,
-        watermark: request.watermark,
-        seed: request.seed,
+    let reference = ReferenceMedia {
+        reference_images: request.reference_images.clone().unwrap_or_default(),
+        first_frame: request.first_frame.clone(),
+        last_frame: request.last_frame.clone(),
+        reference_videos: request.reference_videos.clone().unwrap_or_default(),
+        reference_audios: request.reference_audios.clone().unwrap_or_default(),
     };
 
-    let response = client.create_video_task(api_request).await
+    let options = RequestOptions {
+        no_proxy: provider_record.no_proxy,
+    };
+    let task = provider
+        .create_video_task(
+            &provider_record.credentials,
+            &model,
+            &request.prompt,
+            &request.params,
+            &reference,
+            options,
+        )
+        .await
         .map_err(|e| e.to_string())?;
 
-    // Save to database
     let id = Uuid::new_v4().to_string();
+
     let record = VideoRecord {
         id: id.clone(),
         project_id: Some(request.project_id),
-        task_id: response.id.clone(),
+        task_id: task.task_id.clone(),
         file_path: None,
         first_frame_thumbnail: None,
         last_frame_thumbnail: None,
@@ -212,13 +129,16 @@ pub async fn generate_video(
         vocals_path: None,
         bgm_path: None,
         prompt: request.prompt,
-        model: config.video_model,
-        generation_type: request.generation_type,
+        provider_type: provider_record.provider_type.clone(),
+        credentials_snapshot: provider_record.credentials.clone(),
+        no_proxy: provider_record.no_proxy,
+        model,
+        generation_type: task.metadata.generation_type.clone(),
         source_image_id: request.source_image_id,
-        resolution: request.resolution,
-        duration: request.duration.map(|d| d as f64),
+        resolution: task.metadata.resolution.clone(),
+        duration: task.metadata.duration,
         fps: Some(24),
-        aspect_ratio: request.aspect_ratio,
+        aspect_ratio: task.metadata.aspect_ratio.clone(),
         status: "pending".to_string(),
         error_message: None,
         tokens_used: None,
@@ -228,64 +148,59 @@ pub async fn generate_video(
     };
 
     {
-        let db = db_state.database.lock().map_err(|e| e.to_string())?;
+        let db = state.db.lock().map_err(|e| e.to_string())?;
         db.insert_video(&record).map_err(|e| e.to_string())?;
     }
 
     Ok(GenerateVideoResponse {
         id,
-        task_id: response.id,
+        task_id: task.task_id,
         status: "pending".to_string(),
     })
 }
 
 #[tauri::command]
-pub async fn poll_video_task(
-    db_state: State<'_, DbState>,
-    id: String,
-) -> Result<Video, String> {
-    // Get video record and config
-    let (record, config) = {
-        let db = db_state.database.lock().map_err(|e| e.to_string())?;
-        let record = db.get_video_by_id(&id)
+pub async fn poll_video_task(state: State<'_, AppState>, id: String) -> Result<Video, String> {
+    // Load record + output dir. Credentials come from the record snapshot so
+    // edits/deletes to the provider don't break in-flight tasks.
+    let (record, output_directory) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let record = db
+            .get_video_by_id(&id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Video not found".to_string())?;
-        let config = db.load_config().map_err(|e| e.to_string())?;
-        (record, config)
+        let settings = db.load_app_settings().map_err(|e| e.to_string())?;
+        (record, settings.output_directory)
     };
 
-    // If already completed or failed, just return current status
     if record.status == "completed" || record.status == "failed" {
         return Ok(map_to_video(record));
     }
 
-    // Create API client and poll
-    let client = ApiClient::new(&config.base_url, &config.api_token)
+    let provider = state
+        .registry
+        .get(&record.provider_type)
+        .ok_or_else(|| format!("未知的 Provider 类型: {}", record.provider_type))?;
+
+    let status_response = provider
+        .poll_video_task(
+            &record.credentials_snapshot,
+            &record.task_id,
+            RequestOptions {
+                no_proxy: record.no_proxy,
+            },
+        )
+        .await
         .map_err(|e| e.to_string())?;
 
-    let status_response = client.get_video_task(&record.task_id).await
-        .map_err(|e| e.to_string())?;
+    let new_status = status_response.status.as_str();
 
-    // Map API status to our status
-    let new_status = match status_response.status.as_str() {
-        "queued" | "running" => "processing",
-        "succeeded" => "completed",
-        "failed" | "expired" => "failed",
-        other => other,
-    };
-
-    // If status changed, update database
     if new_status != record.status {
         let downloaded = if new_status == "completed" {
-            // Download video if completed
-            if let Some(content) = &status_response.content {
-                if let Some(video_url) = &content.video_url {
-                    download_video(video_url, &config.output_directory, &id, true)
-                        .await
-                        .ok()
-                } else {
-                    None
-                }
+            if let Some(video_url) = &status_response.video_url {
+                download_video(video_url, &output_directory, &id, true)
+                    .await
+                    .ok()
             } else {
                 None
             }
@@ -293,38 +208,38 @@ pub async fn poll_video_task(
             None
         };
 
-        let error_message = if new_status == "failed" {
-            status_response.error.as_ref().and_then(|e| e.message.clone())
-        } else {
-            None
-        };
-
-        let tokens_used = status_response.usage.as_ref().map(|u| u.total_tokens);
-
         {
-            let db = db_state.database.lock().map_err(|e| e.to_string())?;
+            let db = state.db.lock().map_err(|e| e.to_string())?;
             let update = VideoStatusUpdate {
                 status: new_status,
                 file_path: downloaded.as_ref().map(|d| d.file_path.as_str()),
-                first_frame_thumbnail: downloaded.as_ref().and_then(|d| d.first_frame_thumbnail.as_deref()),
-                last_frame_thumbnail: downloaded.as_ref().and_then(|d| d.last_frame_thumbnail.as_deref()),
-                first_frame_path: downloaded.as_ref().and_then(|d| d.first_frame_path.as_deref()),
-                last_frame_path: downloaded.as_ref().and_then(|d| d.last_frame_path.as_deref()),
+                first_frame_thumbnail: downloaded
+                    .as_ref()
+                    .and_then(|d| d.first_frame_thumbnail.as_deref()),
+                last_frame_thumbnail: downloaded
+                    .as_ref()
+                    .and_then(|d| d.last_frame_thumbnail.as_deref()),
+                first_frame_path: downloaded
+                    .as_ref()
+                    .and_then(|d| d.first_frame_path.as_deref()),
+                last_frame_path: downloaded
+                    .as_ref()
+                    .and_then(|d| d.last_frame_path.as_deref()),
                 vocals_path: downloaded.as_ref().and_then(|d| d.vocals_path.as_deref()),
                 bgm_path: downloaded.as_ref().and_then(|d| d.bgm_path.as_deref()),
                 resolution: status_response.resolution.as_deref(),
                 duration: status_response.duration,
-                fps: status_response.framespersecond,
-                tokens_used,
-                error_message: error_message.as_deref(),
+                fps: status_response.fps,
+                tokens_used: status_response.tokens_used,
+                error_message: status_response.error_message.as_deref(),
             };
-            db.update_video_status(&id, &update).map_err(|e| e.to_string())?;
+            db.update_video_status(&id, &update)
+                .map_err(|e| e.to_string())?;
         }
     }
 
-    // Return updated record
     let updated_record = {
-        let db = db_state.database.lock().map_err(|e| e.to_string())?;
+        let db = state.db.lock().map_err(|e| e.to_string())?;
         db.get_video_by_id(&id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Video not found".to_string())?
@@ -335,7 +250,7 @@ pub async fn poll_video_task(
 
 #[tauri::command]
 pub async fn get_videos(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     project_id: String,
     page: i64,
     page_size: i64,
@@ -343,7 +258,7 @@ pub async fn get_videos(
     let offset = page * page_size;
 
     let (videos, total) = {
-        let db = db_state.database.lock().map_err(|e| e.to_string())?;
+        let db = state.db.lock().map_err(|e| e.to_string())?;
         let videos = db
             .get_videos_by_project(&project_id, page_size, offset)
             .map_err(|e| e.to_string())?;
@@ -365,7 +280,7 @@ pub async fn get_videos(
 
 #[tauri::command]
 pub async fn get_videos_by_asset_type(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     project_id: String,
     asset_type: String,
     page: i64,
@@ -374,7 +289,7 @@ pub async fn get_videos_by_asset_type(
     let offset = page * page_size;
 
     let (videos, total) = {
-        let db = db_state.database.lock().map_err(|e| e.to_string())?;
+        let db = state.db.lock().map_err(|e| e.to_string())?;
         let videos = db
             .get_videos_by_asset_type(&project_id, &asset_type, page_size, offset)
             .map_err(|e| e.to_string())?;
@@ -396,28 +311,28 @@ pub async fn get_videos_by_asset_type(
 
 #[tauri::command]
 pub async fn get_video_detail(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     id: String,
 ) -> Result<Option<Video>, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let record = db.get_video_by_id(&id).map_err(|e| e.to_string())?;
     Ok(record.map(map_to_video))
 }
 
 #[tauri::command]
-pub async fn get_pending_videos(db_state: State<'_, DbState>) -> Result<Vec<Video>, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+pub async fn get_pending_videos(state: State<'_, AppState>) -> Result<Vec<Video>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let records = db.get_pending_videos().map_err(|e| e.to_string())?;
     Ok(records.into_iter().map(map_to_video).collect())
 }
 
 #[tauri::command]
 pub async fn delete_video(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     id: String,
     delete_file: bool,
 ) -> Result<bool, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
 
     if delete_file {
         if let Ok(Some(record)) = db.get_video_by_id(&id) {
@@ -448,22 +363,24 @@ pub async fn delete_video(
 
 #[tauri::command]
 pub async fn add_video_tag(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     id: String,
     asset_type: String,
 ) -> Result<bool, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
-    db.add_video_asset_type(&id, &asset_type).map_err(|e| e.to_string())
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.add_video_asset_type(&id, &asset_type)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn remove_video_tag(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     id: String,
     asset_type: String,
 ) -> Result<bool, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
-    db.remove_video_asset_type(&id, &asset_type).map_err(|e| e.to_string())
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.remove_video_asset_type(&id, &asset_type)
+        .map_err(|e| e.to_string())
 }
 
 // ============================================================================
@@ -495,13 +412,11 @@ pub async fn check_stem_model_status() -> Result<StemModelStatus, String> {
                 cache_path: cache_dir.to_string_lossy().to_string(),
             })
         }
-        None => {
-            Ok(StemModelStatus {
-                downloaded: false,
-                model_size_mb: 0.0,
-                cache_path: cache_dir.to_string_lossy().to_string(),
-            })
-        }
+        None => Ok(StemModelStatus {
+            downloaded: false,
+            model_size_mb: 0.0,
+            cache_path: cache_dir.to_string_lossy().to_string(),
+        }),
     }
 }
 
@@ -532,8 +447,7 @@ pub async fn delete_stem_model() -> Result<(), String> {
         .map_err(|e| format!("Failed to get cache dir: {:?}", e))?;
 
     if let Some(path) = find_model_file(&cache_dir) {
-        std::fs::remove_file(&path)
-            .map_err(|e| format!("Failed to delete model: {}", e))?;
+        std::fs::remove_file(&path).map_err(|e| format!("Failed to delete model: {}", e))?;
     }
     Ok(())
 }
@@ -603,9 +517,14 @@ struct DownloadedVideo {
     bgm_path: Option<String>,
 }
 
-async fn download_video(url: &str, output_dir: &str, video_id: &str, organize_by_date: bool) -> Result<DownloadedVideo, String> {
-    use std::path::PathBuf;
+async fn download_video(
+    url: &str,
+    output_dir: &str,
+    video_id: &str,
+    organize_by_date: bool,
+) -> Result<DownloadedVideo, String> {
     use chrono::Local;
+    use std::path::PathBuf;
 
     // Create output directory
     let mut path = PathBuf::from(output_dir);
@@ -635,7 +554,9 @@ async fn download_video(url: &str, output_dir: &str, video_id: &str, organize_by
         };
         return Ok(DownloadedVideo {
             file_path,
-            first_frame_thumbnail: frames.as_ref().and_then(|f| f.first_frame_thumbnail.clone()),
+            first_frame_thumbnail: frames
+                .as_ref()
+                .and_then(|f| f.first_frame_thumbnail.clone()),
             last_frame_thumbnail: frames.as_ref().and_then(|f| f.last_frame_thumbnail.clone()),
             first_frame_path: frames.as_ref().and_then(|f| f.first_frame_path.clone()),
             last_frame_path: frames.as_ref().and_then(|f| f.last_frame_path.clone()),
@@ -671,7 +592,9 @@ async fn download_video(url: &str, output_dir: &str, video_id: &str, organize_by
 
     Ok(DownloadedVideo {
         file_path,
-        first_frame_thumbnail: frames.as_ref().and_then(|f| f.first_frame_thumbnail.clone()),
+        first_frame_thumbnail: frames
+            .as_ref()
+            .and_then(|f| f.first_frame_thumbnail.clone()),
         last_frame_thumbnail: frames.as_ref().and_then(|f| f.last_frame_thumbnail.clone()),
         first_frame_path: frames.as_ref().and_then(|f| f.first_frame_path.clone()),
         last_frame_path: frames.as_ref().and_then(|f| f.last_frame_path.clone()),
@@ -705,10 +628,20 @@ fn extract_video_frames(video_path: &str) -> Result<ExtractedFrames, String> {
     let last_frame_path = video_dir.join(format!("{}_last.jpg", video_stem));
 
     // Extract first frame (near the beginning)
-    let first_frame_ok = extract_frame_at_position(video_path, first_frame_path.to_str().unwrap(), FramePosition::Start).is_ok();
+    let first_frame_ok = extract_frame_at_position(
+        video_path,
+        first_frame_path.to_str().unwrap(),
+        FramePosition::Start,
+    )
+    .is_ok();
 
     // Extract last frame (near the end)
-    let last_frame_ok = extract_frame_at_position(video_path, last_frame_path.to_str().unwrap(), FramePosition::End).is_ok();
+    let last_frame_ok = extract_frame_at_position(
+        video_path,
+        last_frame_path.to_str().unwrap(),
+        FramePosition::End,
+    )
+    .is_ok();
 
     // Generate thumbnails from the extracted frames
     let first_frame_thumbnail = if first_frame_ok && first_frame_path.exists() {
@@ -726,8 +659,16 @@ fn extract_video_frames(video_path: &str) -> Result<ExtractedFrames, String> {
     Ok(ExtractedFrames {
         first_frame_thumbnail,
         last_frame_thumbnail,
-        first_frame_path: if first_frame_ok { Some(first_frame_path.to_string_lossy().to_string()) } else { None },
-        last_frame_path: if last_frame_ok { Some(last_frame_path.to_string_lossy().to_string()) } else { None },
+        first_frame_path: if first_frame_ok {
+            Some(first_frame_path.to_string_lossy().to_string())
+        } else {
+            None
+        },
+        last_frame_path: if last_frame_ok {
+            Some(last_frame_path.to_string_lossy().to_string())
+        } else {
+            None
+        },
     })
 }
 
@@ -738,22 +679,28 @@ enum FramePosition {
 
 /// Extract a single frame from video at specified position using pure Rust crates
 /// Uses: mp4parse (container) + openh264 (decoding)
-fn extract_frame_at_position(video_path: &str, output_path: &str, position: FramePosition) -> Result<(), String> {
-    use std::fs::File;
-    use std::io::{BufReader, Read, Seek, SeekFrom};
+fn extract_frame_at_position(
+    video_path: &str,
+    output_path: &str,
+    position: FramePosition,
+) -> Result<(), String> {
     use openh264::decoder::{Decoder, DecoderConfig, Flush};
     use openh264::formats::YUVSource;
     use openh264::OpenH264API;
+    use std::fs::File;
+    use std::io::{BufReader, Read, Seek, SeekFrom};
 
     let file = File::open(video_path).map_err(|e| format!("Failed to open video: {}", e))?;
     let mut reader = BufReader::new(file);
 
     // Parse MP4 container
-    let context = mp4parse::read_mp4(&mut reader)
-        .map_err(|e| format!("Failed to parse MP4: {:?}", e))?;
+    let context =
+        mp4parse::read_mp4(&mut reader).map_err(|e| format!("Failed to parse MP4: {:?}", e))?;
 
     // Find video track
-    let video_track = context.tracks.iter()
+    let video_track = context
+        .tracks
+        .iter()
         .find(|t| t.track_type == mp4parse::TrackType::Video)
         .ok_or("No video track found")?;
 
@@ -794,8 +741,12 @@ fn extract_frame_at_position(video_path: &str, output_path: &str, position: Fram
     let sps_annexb = add_start_code(&sps_data);
     let pps_annexb = add_start_code(&pps_data);
 
-    decoder.decode(&sps_annexb).map_err(|e| format!("Failed to decode SPS: {:?}", e))?;
-    decoder.decode(&pps_annexb).map_err(|e| format!("Failed to decode PPS: {:?}", e))?;
+    decoder
+        .decode(&sps_annexb)
+        .map_err(|e| format!("Failed to decode SPS: {:?}", e))?;
+    decoder
+        .decode(&pps_annexb)
+        .map_err(|e| format!("Failed to decode PPS: {:?}", e))?;
 
     // Determine which samples to decode based on position
     let (start_sample, end_sample) = match position {
@@ -807,7 +758,8 @@ fn extract_frame_at_position(video_path: &str, output_path: &str, position: Fram
         FramePosition::End => {
             // For last frame: find the keyframe nearest to (but not after) the last sample,
             // then decode from there through all frames to the end
-            let last_keyframe_before_end = sync_samples.iter()
+            let last_keyframe_before_end = sync_samples
+                .iter()
                 .filter(|&&s| s <= sample_count)
                 .max()
                 .copied()
@@ -822,10 +774,12 @@ fn extract_frame_at_position(video_path: &str, output_path: &str, position: Fram
     for sample_num in start_sample..=end_sample {
         let (sample_offset, sample_size) = get_sample_location(video_track, sample_num)?;
 
-        reader.seek(SeekFrom::Start(sample_offset))
+        reader
+            .seek(SeekFrom::Start(sample_offset))
             .map_err(|e| format!("Failed to seek to sample: {}", e))?;
         let mut sample_data = vec![0u8; sample_size as usize];
-        reader.read_exact(&mut sample_data)
+        reader
+            .read_exact(&mut sample_data)
             .map_err(|e| format!("Failed to read sample: {}", e))?;
 
         // Convert from AVCC format to Annex B
@@ -907,13 +861,15 @@ fn get_sample_location(track: &mp4parse::Track, sample_number: u32) -> Result<(u
             let chunk_num = first_chunk + chunk_in_entry;
             let samples_in_chunk = samples_per_chunk;
 
-            if sample_number >= current_sample && sample_number < current_sample + samples_in_chunk {
+            if sample_number >= current_sample && sample_number < current_sample + samples_in_chunk
+            {
                 // Found the chunk!
                 let chunk_index = (chunk_num - 1) as usize;
                 let sample_in_chunk = sample_number - current_sample;
 
                 // Calculate offset within chunk
-                let mut offset = chunk_offsets.get(chunk_index)
+                let mut offset = chunk_offsets
+                    .get(chunk_index)
                     .copied()
                     .ok_or("Chunk index out of bounds")?;
 
@@ -924,7 +880,8 @@ fn get_sample_location(track: &mp4parse::Track, sample_number: u32) -> Result<(u
                     }
                 }
 
-                let size = sample_sizes.get((sample_number - 1) as usize)
+                let size = sample_sizes
+                    .get((sample_number - 1) as usize)
                     .copied()
                     .ok_or("Sample index out of bounds")?;
 
@@ -1039,7 +996,8 @@ fn avcc_to_annexb(data: &[u8]) -> Result<Vec<u8>, String> {
     let length_size = 4;
 
     while pos + length_size <= data.len() {
-        let nalu_len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        let nalu_len =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         pos += length_size;
 
         if pos + nalu_len > data.len() {
@@ -1139,8 +1097,16 @@ fn separate_audio_stems(video_path: &str) -> Result<SeparatedStems, String> {
     let _ = std::fs::remove_dir_all(&output_dir);
 
     Ok(SeparatedStems {
-        vocals_path: if vocals_path.exists() { Some(vocals_path.to_string_lossy().to_string()) } else { None },
-        bgm_path: if bgm_path.exists() { Some(bgm_path.to_string_lossy().to_string()) } else { None },
+        vocals_path: if vocals_path.exists() {
+            Some(vocals_path.to_string_lossy().to_string())
+        } else {
+            None
+        },
+        bgm_path: if bgm_path.exists() {
+            Some(bgm_path.to_string_lossy().to_string())
+        } else {
+            None
+        },
     })
 }
 
@@ -1185,7 +1151,12 @@ fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(),
     hint.with_extension("mp4");
 
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .map_err(|e| format!("Failed to probe MP4: {}", e))?;
 
     let mut format_reader = probed.format;
@@ -1227,7 +1198,10 @@ fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(),
         let packet = match format_reader.next_packet() {
             Ok(packet) => packet,
             Err(symphonia::core::errors::Error::IoError(ref e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break
+            }
             Err(_) => break,
         };
 
@@ -1271,7 +1245,10 @@ fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(),
     // but does not resample internally, causing playback speed mismatch
     let target_rate = 44100u32;
     let (final_samples, final_rate) = if sample_rate != target_rate {
-        (resample_linear(&all_samples, channels, sample_rate, target_rate), target_rate)
+        (
+            resample_linear(&all_samples, channels, sample_rate, target_rate),
+            target_rate,
+        )
     } else {
         (all_samples, sample_rate)
     };
@@ -1288,11 +1265,13 @@ fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(),
         .map_err(|e| format!("Failed to create WAV writer: {}", e))?;
 
     for sample in &final_samples {
-        writer.write_sample(*sample)
+        writer
+            .write_sample(*sample)
             .map_err(|e| format!("Failed to write WAV sample: {}", e))?;
     }
 
-    writer.finalize()
+    writer
+        .finalize()
         .map_err(|e| format!("Failed to finalize WAV: {}", e))?;
 
     Ok(())
@@ -1302,8 +1281,7 @@ fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(),
 fn generate_thumbnail_from_image(image_path: &str) -> Result<String, String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
 
-    let img = image::open(image_path)
-        .map_err(|e| format!("Failed to open image: {}", e))?;
+    let img = image::open(image_path).map_err(|e| format!("Failed to open image: {}", e))?;
 
     // Create thumbnail (max 200x200, maintains aspect ratio)
     let thumbnail = img.thumbnail(200, 200);
@@ -1311,7 +1289,8 @@ fn generate_thumbnail_from_image(image_path: &str) -> Result<String, String> {
     // Encode as JPEG with quality 80 (same as image thumbnails)
     let mut buffer = std::io::Cursor::new(Vec::new());
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 80);
-    thumbnail.write_with_encoder(encoder)
+    thumbnail
+        .write_with_encoder(encoder)
         .map_err(|e| format!("Failed to encode thumbnail: {}", e))?;
 
     let encoded = STANDARD.encode(buffer.into_inner());
@@ -1362,8 +1341,15 @@ mod tests {
 
         let result = extract_audio_from_mp4(video_path, output_wav);
         println!("extract_audio_from_mp4 result: {:?}", result);
-        assert!(result.is_ok(), "Audio extraction failed: {:?}", result.err());
-        assert!(std::path::Path::new(output_wav).exists(), "WAV file was not created");
+        assert!(
+            result.is_ok(),
+            "Audio extraction failed: {:?}",
+            result.err()
+        );
+        assert!(
+            std::path::Path::new(output_wav).exists(),
+            "WAV file was not created"
+        );
 
         let metadata = std::fs::metadata(output_wav).unwrap();
         println!("WAV file size: {} bytes", metadata.len());

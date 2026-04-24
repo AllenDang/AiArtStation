@@ -1,5 +1,5 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
 use crate::image_processing::{image_to_base64, smart_resize};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

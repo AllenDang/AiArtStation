@@ -778,7 +778,7 @@ export function GalleryPage({
       <TaskImagePreview
         task={previewTask}
         open={!!previewTask}
-        onOpenChange={(open) => !open && setPreviewTask(null)}
+        onOpenChange={(open: boolean) => !open && setPreviewTask(null)}
       />
 
       {/* Bundle Image Preview Modal */}

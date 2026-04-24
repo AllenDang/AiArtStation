@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useState, useCallback } from "react";
-import type { ConfigResponse, SaveConfigRequest } from "../types";
+import type { AppSettings } from "../types";
 
 export function useSettings() {
-  const [config, setConfig] = useState<ConfigResponse | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -11,8 +11,8 @@ export function useSettings() {
     setLoading(true);
     setError(null);
     try {
-      const result = await invoke<ConfigResponse>("load_settings");
-      setConfig(result);
+      const result = await invoke<AppSettings>("load_app_settings");
+      setSettings(result);
       return result;
     } catch (e) {
       setError(String(e));
@@ -22,42 +22,12 @@ export function useSettings() {
     }
   }, []);
 
-  const saveSettings = useCallback(async (request: SaveConfigRequest) => {
+  const saveSettings = useCallback(async (next: AppSettings) => {
     setLoading(true);
     setError(null);
     try {
-      await invoke("save_settings", { request });
-      // Reload settings after save
-      const result = await invoke<ConfigResponse>("load_settings");
-      setConfig(result);
-    } catch (e) {
-      setError(String(e));
-      throw e;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const testConnection = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await invoke<string>("test_connection");
-      return result;
-    } catch (e) {
-      setError(String(e));
-      throw e;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const clearSettings = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      await invoke("clear_settings");
-      setConfig(null);
+      await invoke("save_app_settings", { settings: next });
+      setSettings(next);
     } catch (e) {
       setError(String(e));
       throw e;
@@ -71,13 +41,11 @@ export function useSettings() {
   }, []);
 
   return {
-    config,
+    settings,
     loading,
     error,
     loadSettings,
     saveSettings,
-    testConnection,
-    clearSettings,
     getDefaultOutputDir,
   };
 }

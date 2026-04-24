@@ -1,4 +1,4 @@
-use crate::commands::generation::DbState;
+use crate::commands::generation::AppState;
 use crate::storage::ProjectRecord;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ pub struct UpdateProjectRequest {
 
 #[tauri::command]
 pub async fn create_project(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     request: CreateProjectRequest,
 ) -> Result<Project, String> {
     let now = Utc::now();
@@ -42,7 +42,7 @@ pub async fn create_project(
         updated_at: now,
     };
 
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.insert_project(&record).map_err(|e| e.to_string())?;
 
     Ok(Project {
@@ -57,8 +57,8 @@ pub async fn create_project(
 }
 
 #[tauri::command]
-pub async fn get_projects(db_state: State<'_, DbState>) -> Result<Vec<Project>, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+pub async fn get_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let records = db.get_projects().map_err(|e| e.to_string())?;
 
     let mut projects = Vec::new();
@@ -86,10 +86,10 @@ pub async fn get_projects(db_state: State<'_, DbState>) -> Result<Vec<Project>, 
 
 #[tauri::command]
 pub async fn get_project(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     id: String,
 ) -> Result<Option<Project>, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let record = db.get_project_by_id(&id).map_err(|e| e.to_string())?;
 
     match record {
@@ -117,17 +117,17 @@ pub async fn get_project(
 
 #[tauri::command]
 pub async fn update_project(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     id: String,
     request: UpdateProjectRequest,
 ) -> Result<bool, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.update_project(&id, &request.name, request.description.as_deref())
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn delete_project(db_state: State<'_, DbState>, id: String) -> Result<bool, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+pub async fn delete_project(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.delete_project(&id).map_err(|e| e.to_string())
 }

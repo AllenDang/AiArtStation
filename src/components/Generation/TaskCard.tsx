@@ -16,11 +16,16 @@ export function TaskCard({ task, onRetry, onDismiss, onViewImages }: TaskCardPro
   const isCompleted = task.status === "completed";
   const isFailed = task.status === "failed";
 
-  // Get expected image count for sequential generation
+  // Get expected image count for sequential generation.
+  // Params are provider-specific; we treat `sequential_generation` + `max_images`
+  // as conventional keys the volcengine manifest exposes. Unknown providers
+  // simply skip sequential preview.
   const request = task.request as GenerateImageRequest;
-  const isSequential = request.sequential_generation;
-  const maxImages = request.max_images || 15;
-  const isAutoMode = maxImages === 15; // 15 is used for auto mode
+  const params = (request.params ?? {}) as Record<string, unknown>;
+  const isSequential = !!params.sequential_generation;
+  const maxImages =
+    typeof params.max_images === "number" ? (params.max_images as number) : 15;
+  const isAutoMode = maxImages === 15;
   const actualCount = task.images?.length || 0;
 
   // For completed tasks with multiple images, show up to 4 in a grid

@@ -38,8 +38,8 @@ pub fn generate_nonce() -> [u8; NONCE_SIZE] {
 /// Encrypt data using AES-256-GCM
 /// Returns: nonce (12 bytes) + ciphertext
 pub fn encrypt(data: &[u8], key: &[u8; KEY_SIZE]) -> Result<Vec<u8>, CryptoError> {
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
 
     let nonce_bytes = generate_nonce();
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -63,8 +63,8 @@ pub fn decrypt(data: &[u8], key: &[u8; KEY_SIZE]) -> Result<Vec<u8>, CryptoError
         return Err(CryptoError::InvalidFormat);
     }
 
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| CryptoError::DecryptionFailed(e.to_string()))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|e| CryptoError::DecryptionFailed(e.to_string()))?;
 
     let nonce = Nonce::from_slice(&data[..NONCE_SIZE]);
     let ciphertext = &data[NONCE_SIZE..];

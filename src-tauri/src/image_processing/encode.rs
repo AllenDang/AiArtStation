@@ -7,8 +7,7 @@ use std::io::Cursor;
 ///
 /// Returns: `"data:image/{format};base64,{encoded}"`
 pub fn image_to_base64(data: &[u8]) -> Result<String> {
-    let format =
-        image::guess_format(data).context("Failed to detect image format")?;
+    let format = image::guess_format(data).context("Failed to detect image format")?;
 
     let mime_type = match format {
         ImageFormat::Jpeg => "jpeg",
@@ -28,8 +27,7 @@ pub fn image_to_base64(data: &[u8]) -> Result<String> {
 ///
 /// Creates a 200x200 max thumbnail for fast loading in gallery views.
 pub fn create_thumbnail_base64(data: &[u8], max_size: u32) -> Result<String> {
-    let img = image::load_from_memory(data)
-        .context("Failed to decode image for thumbnail")?;
+    let img = image::load_from_memory(data).context("Failed to decode image for thumbnail")?;
 
     // Create thumbnail
     let thumbnail = img.thumbnail(max_size, max_size);
@@ -37,7 +35,8 @@ pub fn create_thumbnail_base64(data: &[u8], max_size: u32) -> Result<String> {
     // Encode to JPEG (smaller than PNG for thumbnails)
     let mut buffer = Cursor::new(Vec::new());
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 80);
-    thumbnail.write_with_encoder(encoder)
+    thumbnail
+        .write_with_encoder(encoder)
         .context("Failed to encode thumbnail")?;
 
     let jpeg_data = buffer.into_inner();
@@ -56,8 +55,7 @@ mod tests {
         // Create a simple test image and encode to JPEG
         let img = DynamicImage::new_rgb8(10, 10);
         let mut buffer = Cursor::new(Vec::new());
-        let encoder =
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 90);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 90);
         img.write_with_encoder(encoder).unwrap();
         let jpeg_data = buffer.into_inner();
 

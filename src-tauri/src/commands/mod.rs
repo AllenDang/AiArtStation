@@ -1,15 +1,15 @@
-mod settings;
-mod generation;
-mod gallery;
-mod files;
-mod projects;
 mod assets;
+mod files;
+mod gallery;
+mod generation;
+mod projects;
+mod settings;
 mod video;
 
-pub use settings::*;
-pub use generation::*;
-pub use gallery::*;
-pub use files::*;
-pub use projects::*;
 pub use assets::*;
+pub use files::*;
+pub use gallery::*;
+pub use generation::*;
+pub use projects::*;
+pub use settings::*;
 pub use video::*;

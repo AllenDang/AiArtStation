@@ -1,4 +1,5 @@
 export { useSettings } from "./useSettings";
+export { useProviders } from "./useProviders";
 export { useImageGeneration } from "./useImageGeneration";
 export { useGallery } from "./useGallery";
 export { useFiles } from "./useFiles";

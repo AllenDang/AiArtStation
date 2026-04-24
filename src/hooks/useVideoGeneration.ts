@@ -70,6 +70,12 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
     // Create a temporary ID for immediate display
     const tempId = crypto.randomUUID();
 
+    // Read a few UI-visible params directly from the params bag so the
+    // optimistic preview is accurate.
+    const resolution = typeof request.params?.resolution === "string" ? (request.params.resolution as string) : undefined;
+    const aspectRatio = typeof request.params?.aspect_ratio === "string" ? (request.params.aspect_ratio as string) : undefined;
+    const duration = typeof request.params?.duration === "number" ? (request.params.duration as number) : undefined;
+
     // Add to state IMMEDIATELY - same pattern as image generation
     const newVideo: Video = {
       id: tempId,
@@ -80,9 +86,9 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
       generation_type: request.generation_type,
       status: "pending" as const,
       created_at: new Date().toISOString(),
-      resolution: request.resolution,
-      duration: request.duration,
-      aspect_ratio: request.aspect_ratio,
+      resolution,
+      duration,
+      aspect_ratio: aspectRatio,
       asset_types: [],
     };
     setPendingVideos((prev) => [newVideo, ...prev]);
@@ -92,7 +98,6 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
       setGenerating(true);
       setError(null);
       try {
-        // Read full-resolution images from file paths
         const [firstFrame, lastFrame, refImages, refVideos, refAudios] = await Promise.all([
           readImageFromPath(request.first_frame_input),
           readImageFromPath(request.last_frame_input),
@@ -101,23 +106,16 @@ export function useVideoGeneration(options: UseVideoGenerationOptions = {}) {
           Promise.all((request.reference_audio_paths || []).map(path => readMediaFile(path))),
         ]);
 
-        // Build final request with base64 data
         const finalRequest: GenerateVideoRequest = {
           project_id: request.project_id,
+          provider_type: request.provider_type,
           prompt: request.prompt,
-          generation_type: request.generation_type,
           first_frame: firstFrame,
           last_frame: lastFrame,
           reference_images: refImages.filter((img): img is string => !!img),
           reference_videos: refVideos.length > 0 ? refVideos : undefined,
           reference_audios: refAudios.length > 0 ? refAudios : undefined,
-          resolution: request.resolution,
-          duration: request.duration,
-          aspect_ratio: request.aspect_ratio,
-          generate_audio: request.generate_audio,
-          return_last_frame: request.return_last_frame,
-          watermark: request.watermark,
-          seed: request.seed,
+          params: request.params,
           source_image_id: request.source_image_id,
         };
 

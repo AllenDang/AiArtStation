@@ -20,21 +20,28 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { useSettings, useFiles } from "../../hooks";
-import type { SaveConfigRequest } from "../../types";
+import { useSettings, useProviders, useFiles } from "../../hooks";
+import { ProviderFormDialog } from "./ProviderFormDialog";
 import {
-  Key,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import type { AppSettings, ProviderInstance } from "../../types";
+import {
   Folder,
-  Eye,
-  EyeOff,
   Loader2,
   FolderOpen,
-  Trash2,
   ArrowLeft,
   Music,
   Download,
   CheckCircle2,
   AlertCircle,
+  Plus,
+  Pencil,
+  Trash2,
+  Key,
 } from "lucide-react";
 
 interface StemModelStatus {
@@ -48,30 +55,22 @@ interface SettingsPageProps {
 }
 
 export function SettingsPage({ onBack }: SettingsPageProps) {
-  const {
-    config,
-    loading,
-    loadSettings,
-    saveSettings,
-    testConnection,
-    clearSettings,
-    getDefaultOutputDir,
-  } = useSettings();
+  const { loadSettings, saveSettings, getDefaultOutputDir } = useSettings();
+  const { providers, descriptors, loadProviders, deleteProvider } = useProviders();
   const { openFolder } = useFiles();
 
-  const [formData, setFormData] = useState<SaveConfigRequest>({
-    base_url: "",
-    api_token: "",
-    image_model: "",
-    video_model: "",
+  const [form, setForm] = useState<AppSettings>({
     output_directory: "",
     output_format: "jpeg",
+    default_image_provider_type: null,
+    default_video_provider_type: null,
   });
+  const [saving, setSaving] = useState(false);
 
-  const [showToken, setShowToken] = useState(false);
-  const [testing, setTesting] = useState(false);
+  const [providerDialogOpen, setProviderDialogOpen] = useState(false);
+  const [dialogProviderType, setDialogProviderType] = useState<string | null>(null);
+  const [editingProvider, setEditingProvider] = useState<ProviderInstance | undefined>(undefined);
 
-  // Stem model state
   const [stemStatus, setStemStatus] = useState<StemModelStatus | null>(null);
   const [stemDownloading, setStemDownloading] = useState(false);
   const [stemProgress, setStemProgress] = useState<{ downloaded: number; total: number } | null>(null);
@@ -79,41 +78,33 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
 
   useEffect(() => {
     loadSettings().then((cfg) => {
-      if (cfg) {
-        setFormData({
-          base_url: cfg.base_url,
-          api_token: "",
-          image_model: cfg.image_model,
-          video_model: cfg.video_model,
-          output_directory: cfg.output_directory,
-          output_format: cfg.output_format,
-        });
-      }
+      if (cfg) setForm(cfg);
     });
-  }, [loadSettings]);
+    loadProviders().catch(() => {});
+  }, [loadSettings, loadProviders]);
 
   useEffect(() => {
-    if (!formData.output_directory) {
+    if (!form.output_directory) {
       getDefaultOutputDir().then((dir) => {
-        setFormData((prev) => ({ ...prev, output_directory: dir }));
+        setForm((prev) => ({ ...prev, output_directory: dir }));
       });
     }
-  }, [getDefaultOutputDir, formData.output_directory]);
+  }, [getDefaultOutputDir, form.output_directory]);
 
-  // Load stem model status on mount
   useEffect(() => {
     invoke<StemModelStatus>("check_stem_model_status")
       .then(setStemStatus)
       .catch(() => {});
   }, []);
 
-  // Listen for download progress events
   useEffect(() => {
     const unlisten = listen<[number, number]>("stem-model-download-progress", (event) => {
       const [downloaded, total] = event.payload;
       setStemProgress({ downloaded, total });
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   const handleDownloadStemModel = useCallback(async () => {
@@ -146,45 +137,15 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
     }
   }, []);
 
-  const handleSave = async () => {
+  const handleSaveSettings = async () => {
+    setSaving(true);
     try {
-      await saveSettings(formData);
+      await saveSettings(form);
       toast.success("设置已保存");
     } catch (e) {
       toast.error(`保存失败: ${e}`);
-    }
-  };
-
-  const handleTestConnection = async () => {
-    setTesting(true);
-    try {
-      await saveSettings(formData);
-      await testConnection();
-      toast.success("连接成功！");
-    } catch (e) {
-      toast.error(`连接失败: ${e}`);
     } finally {
-      setTesting(false);
-    }
-  };
-
-  const handleClearSettings = async () => {
-    if (confirm("确定要清除所有设置吗？")) {
-      try {
-        await clearSettings();
-        const defaultDir = await getDefaultOutputDir();
-        setFormData({
-          base_url: "",
-          api_token: "",
-          image_model: "",
-          video_model: "",
-          output_directory: defaultDir,
-          output_format: "jpeg",
-        });
-        toast.info("设置已清除");
-      } catch (e) {
-        toast.error(`清除失败: ${e}`);
-      }
+      setSaving(false);
     }
   };
 
@@ -196,15 +157,46 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
         title: "选择输出目录",
       });
       if (selected) {
-        setFormData((prev) => ({
-          ...prev,
-          output_directory: selected as string,
-        }));
+        setForm((prev) => ({ ...prev, output_directory: selected as string }));
       }
     } catch (e) {
       console.error("Failed to select directory:", e);
     }
   };
+
+  const handleAddProvider = (providerType: string) => {
+    setEditingProvider(undefined);
+    setDialogProviderType(providerType);
+    setProviderDialogOpen(true);
+  };
+
+  const handleEditProvider = (p: ProviderInstance) => {
+    setEditingProvider(p);
+    setDialogProviderType(p.provider_type);
+    setProviderDialogOpen(true);
+  };
+
+  const handleDeleteProvider = async (p: ProviderInstance) => {
+    const descriptor = descriptors.find((d) => d.provider_type === p.provider_type);
+    const label = descriptor?.display_name ?? p.provider_type;
+    if (!confirm(`确定要删除 "${label}" 吗？`)) return;
+    try {
+      await deleteProvider(p.provider_type);
+      const next = await loadSettings();
+      if (next) setForm(next);
+      toast.success("Provider 已删除");
+    } catch (e) {
+      toast.error(`删除失败: ${e}`);
+    }
+  };
+
+  const configuredTypes = new Set(providers.map((p) => p.provider_type));
+  const availableDescriptors = descriptors.filter((d) => !configuredTypes.has(d.provider_type));
+  const imageProviders = providers.filter((p) => !!p.image_model);
+  const videoProviders = providers.filter((p) => !!p.video_model);
+
+  const descriptorOf = (p: ProviderInstance) =>
+    descriptors.find((d) => d.provider_type === p.provider_type);
 
   return (
     <div className="p-6 max-w-2xl mx-auto space-y-6">
@@ -216,119 +208,139 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
         )}
         <div>
           <h1 className="text-2xl font-bold">设置</h1>
-          <p className="text-muted-foreground">
-            配置API凭据和输出偏好设置
-          </p>
+          <p className="text-muted-foreground">配置 AI Provider 和输出偏好</p>
         </div>
       </div>
 
-      {/* API Configuration */}
+      {/* Providers */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Key className="w-5 h-5" />
-            API 配置
-          </CardTitle>
-          <CardDescription>
-            配置AI API凭据和模型设置
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div className="space-y-1">
+              <CardTitle className="flex items-center gap-2">
+                <Key className="w-5 h-5" />
+                AI Provider
+              </CardTitle>
+              <CardDescription>
+                管理用于图像/视频生成的 AI 服务提供方
+              </CardDescription>
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" disabled={availableDescriptors.length === 0}>
+                  <Plus className="w-4 h-4 mr-1" />
+                  添加
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {availableDescriptors.map((d) => (
+                  <DropdownMenuItem
+                    key={d.provider_type}
+                    onSelect={() => handleAddProvider(d.provider_type)}
+                  >
+                    {d.display_name}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="base_url">基础URL</Label>
-            <Input
-              id="base_url"
-              placeholder="https://ark.cn-beijing.volces.com/api/v3"
-              value={formData.base_url}
-              onChange={(e) =>
-                setFormData({ ...formData, base_url: e.target.value })
-              }
-            />
-            <p className="text-xs text-muted-foreground">API端点URL</p>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="api_token">API令牌</Label>
-            <div className="relative">
-              <Input
-                id="api_token"
-                type={showToken ? "text" : "password"}
-                placeholder={
-                  config?.api_token_set
-                    ? "••••••••••••••••"
-                    : "输入您的API令牌"
-                }
-                value={formData.api_token}
-                onChange={(e) =>
-                  setFormData({ ...formData, api_token: e.target.value })
-                }
-                className="pr-10"
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
-                onClick={() => setShowToken(!showToken)}
-              >
-                {showToken ? (
-                  <EyeOff className="w-4 h-4 text-muted-foreground" />
-                ) : (
-                  <Eye className="w-4 h-4 text-muted-foreground" />
-                )}
-              </Button>
+          {providers.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">
+              还没有配置 Provider，点击右上角"添加"开始配置。
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {providers.map((p) => {
+                const d = descriptorOf(p);
+                const badges: string[] = [];
+                if (p.image_model) badges.push(`图像: ${p.image_model}`);
+                if (p.video_model) badges.push(`视频: ${p.video_model}`);
+                return (
+                  <div
+                    key={p.provider_type}
+                    className="flex items-center gap-3 p-3 border rounded-md hover:bg-accent/30 transition-colors"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-sm">
+                        {d?.display_name ?? p.provider_type}
+                      </div>
+                      {badges.length > 0 && (
+                        <div className="text-xs text-muted-foreground truncate">
+                          {badges.join(" · ")}
+                        </div>
+                      )}
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleEditProvider(p)}
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => handleDeleteProvider(p)}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
-            <p className="text-xs text-muted-foreground">
-              {config?.api_token_set
-                ? "令牌已设置。输入新值以更新。"
-                : "用于身份验证的Bearer令牌"}
-            </p>
-          </div>
+          )}
 
-          <div className="space-y-2">
-            <Label htmlFor="image_model">图片模型</Label>
-            <Input
-              id="image_model"
-              placeholder="doubao-seedream-4-5-251128"
-              value={formData.image_model}
-              onChange={(e) =>
-                setFormData({ ...formData, image_model: e.target.value })
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              用于图片生成的模型ID
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="video_model">视频模型（可选）</Label>
-            <Input
-              id="video_model"
-              placeholder="doubao-seedance-1-0-pro-250528"
-              value={formData.video_model}
-              onChange={(e) =>
-                setFormData({ ...formData, video_model: e.target.value })
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              用于视频生成的模型ID
-            </p>
-          </div>
-
-          <Button
-            variant="outline"
-            onClick={handleTestConnection}
-            disabled={testing}
-          >
-            {testing ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                测试中...
-              </>
-            ) : (
-              "测试连接"
-            )}
-          </Button>
+          {(imageProviders.length > 1 || videoProviders.length > 1) && (
+            <div className="space-y-4 pt-2 border-t">
+              {imageProviders.length > 1 && (
+                <div className="space-y-2">
+                  <Label>默认图像 Provider</Label>
+                  <Select
+                    value={form.default_image_provider_type ?? ""}
+                    onValueChange={(v) =>
+                      setForm({ ...form, default_image_provider_type: v || null })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="未选择" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {imageProviders.map((p) => (
+                        <SelectItem key={p.provider_type} value={p.provider_type}>
+                          {descriptorOf(p)?.display_name ?? p.provider_type}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              {videoProviders.length > 1 && (
+                <div className="space-y-2">
+                  <Label>默认视频 Provider</Label>
+                  <Select
+                    value={form.default_video_provider_type ?? ""}
+                    onValueChange={(v) =>
+                      setForm({ ...form, default_video_provider_type: v || null })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="未选择" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {videoProviders.map((p) => (
+                        <SelectItem key={p.provider_type} value={p.provider_type}>
+                          {descriptorOf(p)?.display_name ?? p.provider_type}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -339,18 +351,16 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             <Folder className="w-5 h-5" />
             输出设置
           </CardTitle>
-          <CardDescription>
-            配置生成图片的保存位置和方式
-          </CardDescription>
+          <CardDescription>配置生成文件的保存位置和格式</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label>输出目录</Label>
             <div className="flex gap-2">
               <Input
-                value={formData.output_directory}
+                value={form.output_directory}
                 onChange={(e) =>
-                  setFormData({ ...formData, output_directory: e.target.value })
+                  setForm({ ...form, output_directory: e.target.value })
                 }
                 className="flex-1"
               />
@@ -360,7 +370,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
               <Button
                 variant="outline"
                 size="icon"
-                onClick={() => openFolder(formData.output_directory)}
+                onClick={() => openFolder(form.output_directory)}
               >
                 <FolderOpen className="w-4 h-4" />
               </Button>
@@ -370,10 +380,8 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           <div className="space-y-2">
             <Label>输出格式</Label>
             <Select
-              value={formData.output_format}
-              onValueChange={(value) =>
-                setFormData({ ...formData, output_format: value })
-              }
+              value={form.output_format}
+              onValueChange={(value) => setForm({ ...form, output_format: value })}
             >
               <SelectTrigger>
                 <SelectValue />
@@ -395,11 +403,10 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             音频分离模型
           </CardTitle>
           <CardDescription>
-            下载 HTDemucs 模型，自动从视频中分离人声和背景音乐。分离后的音轨可作为参考音频使用，保持角色声音和 BGM 的一致性。
+            下载 HTDemucs 模型，自动从视频中分离人声和背景音乐。分离后的音轨可作为参考音频使用。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Status */}
           <div className="flex items-center gap-3">
             {stemStatus?.downloaded ? (
               <>
@@ -432,7 +439,6 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             )}
           </div>
 
-          {/* Progress bar */}
           {stemDownloading && (
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -443,23 +449,25 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                     : "正在连接..."}
                 </span>
                 {stemProgress && stemProgress.total > 0 && (
-                  <span>{Math.round((stemProgress.downloaded / stemProgress.total) * 100)}%</span>
+                  <span>
+                    {Math.round((stemProgress.downloaded / stemProgress.total) * 100)}%
+                  </span>
                 )}
               </div>
               <div className="h-2 bg-muted rounded-full overflow-hidden">
                 <div
                   className="h-full bg-primary rounded-full transition-all duration-300"
                   style={{
-                    width: stemProgress && stemProgress.total > 0
-                      ? `${(stemProgress.downloaded / stemProgress.total) * 100}%`
-                      : "0%",
+                    width:
+                      stemProgress && stemProgress.total > 0
+                        ? `${(stemProgress.downloaded / stemProgress.total) * 100}%`
+                        : "0%",
                   }}
                 />
               </div>
             </div>
           )}
 
-          {/* Error */}
           {stemError && (
             <div className="flex items-start gap-2 text-sm text-destructive">
               <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
@@ -467,12 +475,8 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             </div>
           )}
 
-          {/* Download button */}
           {!stemStatus?.downloaded && (
-            <Button
-              onClick={handleDownloadStemModel}
-              disabled={stemDownloading}
-            >
+            <Button onClick={handleDownloadStemModel} disabled={stemDownloading}>
               {stemDownloading ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -491,10 +495,9 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
         </CardContent>
       </Card>
 
-      {/* Actions */}
       <div className="flex gap-3">
-        <Button onClick={handleSave} disabled={loading}>
-          {loading ? (
+        <Button onClick={handleSaveSettings} disabled={saving}>
+          {saving ? (
             <>
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
               保存中...
@@ -503,11 +506,21 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             "保存设置"
           )}
         </Button>
-        <Button variant="destructive" onClick={handleClearSettings}>
-          <Trash2 className="w-4 h-4 mr-2" />
-          清除全部
-        </Button>
       </div>
+
+      <ProviderFormDialog
+        open={providerDialogOpen}
+        onOpenChange={setProviderDialogOpen}
+        providerType={dialogProviderType}
+        existing={editingProvider}
+        onSaved={async () => {
+          // The dialog has its own useProviders() instance, so refreshing
+          // this page's list needs an explicit reload here.
+          await loadProviders();
+          const next = await loadSettings();
+          if (next) setForm(next);
+        }}
+      />
     </div>
   );
 }

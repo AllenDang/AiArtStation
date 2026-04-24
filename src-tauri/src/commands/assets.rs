@@ -1,4 +1,4 @@
-use crate::commands::generation::DbState;
+use crate::commands::generation::AppState;
 use crate::image_processing::image_to_base64;
 use crate::storage::AssetRecord;
 use chrono::Utc;
@@ -36,7 +36,7 @@ pub struct UpdateAssetRequest {
 
 #[tauri::command]
 pub async fn create_asset(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     request: CreateAssetRequest,
 ) -> Result<Asset, String> {
     // Generate thumbnail from file
@@ -53,7 +53,7 @@ pub async fn create_asset(
         created_at: Utc::now(),
     };
 
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.insert_asset(&record).map_err(|e| e.to_string())?;
 
     Ok(Asset {
@@ -70,10 +70,10 @@ pub async fn create_asset(
 
 #[tauri::command]
 pub async fn get_assets(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     project_id: String,
 ) -> Result<Vec<Asset>, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let records = db
         .get_assets_by_project(&project_id)
         .map_err(|e| e.to_string())?;
@@ -97,22 +97,22 @@ pub async fn get_assets(
 
 #[tauri::command]
 pub async fn update_asset(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     id: String,
     request: UpdateAssetRequest,
 ) -> Result<bool, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.update_asset(&id, &request.name, &request.asset_type, &request.tags)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn delete_asset(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     id: String,
     delete_file: bool,
 ) -> Result<bool, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
 
     // Optionally delete the file
     if delete_file {

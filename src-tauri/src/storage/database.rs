@@ -3,51 +3,60 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 const DB_FILE: &str = "data.db";
-const CONFIG_KEY: &str = "app_config";
 const DEFAULT_PASSWORD: &str = "ai-artstation-default";
 
 // ============================================================================
-// Config Structure
+// App Settings (non-provider preferences)
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppConfig {
-    pub base_url: String,
-    pub api_token: String,
-    pub image_model: String,
-    pub video_model: String,
+pub struct AppSettings {
     pub output_directory: String,
     pub output_format: String,
-    pub default_size: String,
-    pub default_aspect_ratio: String,
-    pub watermark: bool,
+    pub default_image_provider_type: Option<String>,
+    pub default_video_provider_type: Option<String>,
 }
 
-impl Default for AppConfig {
+impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            base_url: String::new(),
-            api_token: String::new(),
-            image_model: String::new(),
-            video_model: String::new(),
             output_directory: get_default_output_dir(),
             output_format: "jpeg".to_string(),
-            default_size: "2K".to_string(),
-            default_aspect_ratio: "1:1".to_string(),
-            watermark: false,
+            default_image_provider_type: None,
+            default_video_provider_type: None,
         }
     }
 }
 
-fn get_default_output_dir() -> String {
+pub fn get_default_output_dir() -> String {
     dirs::picture_dir()
         .map(|p| p.join("AI-ArtStation"))
         .unwrap_or_else(|| PathBuf::from("./AI-ArtStation"))
         .to_string_lossy()
         .to_string()
+}
+
+// ============================================================================
+// Provider Record
+// ============================================================================
+
+/// Single-instance-per-type. provider_type is the primary key; there is no
+/// separate id/name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderRecord {
+    pub provider_type: String,
+    pub credentials: HashMap<String, String>,
+    pub image_model: Option<String>,
+    pub video_model: Option<String>,
+    /// When true, HTTP requests for this provider bypass any system proxy.
+    /// Useful for in-country relays where the system proxy is routing traffic
+    /// through a VPN that has its own timeout.
+    pub no_proxy: bool,
+    pub created_at: DateTime<Utc>,
 }
 
 // ============================================================================
@@ -83,6 +92,8 @@ pub struct ImageRecord {
     pub file_path: String,
     pub thumbnail: Option<String>, // Pre-generated base64 thumbnail for fast loading
     pub prompt: String,
+    /// Snapshot of provider type at generation time (may be deleted later).
+    pub provider_type: Option<String>,
     pub model: String,
     pub size: String,
     pub aspect_ratio: String,
@@ -97,8 +108,8 @@ pub struct ImageRecord {
 pub struct VideoRecord {
     pub id: String,
     pub project_id: Option<String>,
-    pub task_id: String,           // API task ID for polling
-    pub file_path: Option<String>, // Local path after download
+    pub task_id: String,                       // API task ID for polling
+    pub file_path: Option<String>,             // Local path after download
     pub first_frame_thumbnail: Option<String>, // Base64 thumbnail of first frame
     pub last_frame_thumbnail: Option<String>,  // Base64 thumbnail of last frame
     pub first_frame_path: Option<String>,      // Full-res first frame image path
@@ -106,6 +117,14 @@ pub struct VideoRecord {
     pub vocals_path: Option<String>,           // Separated vocals audio path
     pub bgm_path: Option<String>,              // Separated BGM/accompaniment audio path
     pub prompt: String,
+    /// Snapshot of provider type used (kept so task isolation works even if provider is deleted).
+    pub provider_type: String,
+    /// Snapshot of credentials used at submission time (encrypted JSON). Enables polling
+    /// after the user has edited or removed the provider.
+    pub credentials_snapshot: HashMap<String, String>,
+    /// Snapshot of the provider's no_proxy flag at submission time so polling
+    /// keeps using the same HTTP routing it used to submit.
+    pub no_proxy: bool,
     pub model: String,
     pub generation_type: String, // "text-to-video", "image-to-video-first", "image-to-video-both"
     pub source_image_id: Option<String>,
@@ -144,12 +163,10 @@ pub struct Database {
 
 impl Database {
     pub fn new(app_data_dir: PathBuf) -> Result<Self> {
-        std::fs::create_dir_all(&app_data_dir)
-            .context("Failed to create app data directory")?;
+        std::fs::create_dir_all(&app_data_dir).context("Failed to create app data directory")?;
 
         let db_path = app_data_dir.join(DB_FILE);
-        let conn = Connection::open(&db_path)
-            .context("Failed to open database")?;
+        let conn = Connection::open(&db_path).context("Failed to open database")?;
 
         let db = Self { conn };
         db.init_tables()?;
@@ -157,30 +174,84 @@ impl Database {
     }
 
     fn init_tables(&self) -> Result<()> {
-        // Config table (key-value store for encrypted config)
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS config (
+        // Drop legacy config table — replaced by providers + app_settings.
+        // (User explicitly opted out of backward compatibility.)
+        self.conn
+            .execute("DROP TABLE IF EXISTS config", [])
+            .context("Failed to drop legacy config table")?;
+
+        // Drop an older providers schema (id PK + name + default_*_model) so
+        // CREATE IF NOT EXISTS below can build the current shape. Users were
+        // warned this migration is destructive.
+        let legacy_provider_cols: Vec<String> = self
+            .conn
+            .prepare("PRAGMA table_info(providers)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+        let has_legacy_provider_shape = legacy_provider_cols.iter().any(|c| {
+            c == "id" || c == "name" || c == "default_image_model" || c == "default_video_model"
+        });
+        if has_legacy_provider_shape {
+            self.conn
+                .execute("DROP TABLE IF EXISTS providers", [])
+                .context("Failed to drop legacy providers table")?;
+        }
+
+        // Key-value store for non-provider app preferences.
+        self.conn
+            .execute(
+                "CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
-                value BLOB NOT NULL
+                value TEXT NOT NULL
             )",
-            [],
-        ).context("Failed to create config table")?;
+                [],
+            )
+            .context("Failed to create app_settings table")?;
+
+        // Clear stale default_*_provider_id keys left by older schema versions
+        // so the UI does not look up providers by ids that no longer exist.
+        self.conn
+            .execute(
+                "DELETE FROM app_settings WHERE key IN ('default_image_provider_id', 'default_video_provider_id')",
+                [],
+            )
+            .ok();
+
+        // Providers table (credentials encrypted as blob).
+        // Single-instance-per-type — provider_type is the primary key.
+        self.conn
+            .execute(
+                "CREATE TABLE IF NOT EXISTS providers (
+                provider_type TEXT PRIMARY KEY,
+                credentials BLOB NOT NULL,
+                image_model TEXT,
+                video_model TEXT,
+                no_proxy INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )",
+                [],
+            )
+            .context("Failed to create providers table")?;
 
         // Projects table
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS projects (
+        self.conn
+            .execute(
+                "CREATE TABLE IF NOT EXISTS projects (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 description TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
-            [],
-        ).context("Failed to create projects table")?;
+                [],
+            )
+            .context("Failed to create projects table")?;
 
         // Assets table
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS assets (
+        self.conn
+            .execute(
+                "CREATE TABLE IF NOT EXISTS assets (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
                 name TEXT NOT NULL,
@@ -191,16 +262,19 @@ impl Database {
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             )",
-            [],
-        ).context("Failed to create assets table")?;
+                [],
+            )
+            .context("Failed to create assets table")?;
 
         // Images table
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS images (
+        self.conn
+            .execute(
+                "CREATE TABLE IF NOT EXISTS images (
                 id TEXT PRIMARY KEY,
                 project_id TEXT,
                 file_path TEXT NOT NULL,
                 prompt TEXT NOT NULL,
+                provider_type TEXT,
                 model TEXT NOT NULL,
                 size TEXT NOT NULL,
                 aspect_ratio TEXT NOT NULL,
@@ -210,17 +284,22 @@ impl Database {
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
             )",
-            [],
-        ).context("Failed to create images table")?;
+                [],
+            )
+            .context("Failed to create images table")?;
 
-        // Videos table
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS videos (
+        // Videos table (credentials_snapshot encrypted so polling survives provider edits)
+        self.conn
+            .execute(
+                "CREATE TABLE IF NOT EXISTS videos (
                 id TEXT PRIMARY KEY,
                 project_id TEXT,
                 task_id TEXT NOT NULL,
                 file_path TEXT,
                 prompt TEXT NOT NULL,
+                provider_type TEXT NOT NULL,
+                credentials_snapshot BLOB NOT NULL,
+                no_proxy INTEGER NOT NULL DEFAULT 0,
                 model TEXT NOT NULL,
                 generation_type TEXT NOT NULL,
                 source_image_id TEXT,
@@ -236,232 +315,307 @@ impl Database {
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
                 FOREIGN KEY (source_image_id) REFERENCES images(id) ON DELETE SET NULL
             )",
-            [],
-        ).context("Failed to create videos table")?;
+                [],
+            )
+            .context("Failed to create videos table")?;
 
         // Run migrations for existing databases
         self.run_migrations()?;
 
-        // Create indexes for faster queries
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_images_created_at ON images(created_at DESC)",
-            [],
-        ).context("Failed to create images index")?;
-
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_images_project_id ON images(project_id)",
-            [],
-        ).context("Failed to create images project index")?;
-
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_assets_project_id ON assets(project_id)",
-            [],
-        ).context("Failed to create assets index")?;
-
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_videos_project_id ON videos(project_id)",
-            [],
-        ).context("Failed to create videos project index")?;
-
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status)",
-            [],
-        ).context("Failed to create videos status index")?;
+        // Indexes
+        self.conn
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_images_created_at ON images(created_at DESC)",
+                [],
+            )
+            .context("Failed to create images index")?;
+        self.conn
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_images_project_id ON images(project_id)",
+                [],
+            )
+            .context("Failed to create images project index")?;
+        self.conn
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_assets_project_id ON assets(project_id)",
+                [],
+            )
+            .context("Failed to create assets index")?;
+        self.conn
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_videos_project_id ON videos(project_id)",
+                [],
+            )
+            .context("Failed to create videos project index")?;
+        self.conn
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status)",
+                [],
+            )
+            .context("Failed to create videos status index")?;
 
         Ok(())
     }
 
     fn run_migrations(&self) -> Result<()> {
-        // Migration: Add project_id column to images table if it doesn't exist
-        let columns: Vec<String> = self.conn
+        // Migrations for installs that are upgrading from the single-provider schema.
+        // Schema history kept below; all new columns are added with safe defaults.
+
+        let provider_columns: Vec<String> = self
+            .conn
+            .prepare("PRAGMA table_info(providers)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+        if !provider_columns.contains(&"no_proxy".to_string()) {
+            self.conn.execute(
+                "ALTER TABLE providers ADD COLUMN no_proxy INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+
+        let image_columns: Vec<String> = self
+            .conn
             .prepare("PRAGMA table_info(images)")?
             .query_map([], |row| row.get::<_, String>(1))?
             .filter_map(|r| r.ok())
             .collect();
 
-        if !columns.contains(&"project_id".to_string()) {
-            self.conn.execute(
-                "ALTER TABLE images ADD COLUMN project_id TEXT REFERENCES projects(id)",
-                [],
-            ).context("Failed to add project_id to images table")?;
-        }
-
-        // Migration: Add batch_id column to images table for grouping sequential images
-        if !columns.contains(&"batch_id".to_string()) {
-            self.conn.execute(
-                "ALTER TABLE images ADD COLUMN batch_id TEXT",
-                [],
-            ).context("Failed to add batch_id to images table")?;
-
-            // Create index for batch_id queries
+        if !image_columns.contains(&"batch_id".to_string()) {
+            self.conn
+                .execute("ALTER TABLE images ADD COLUMN batch_id TEXT", [])
+                .context("Failed to add batch_id")?;
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_images_batch_id ON images(batch_id)",
                 [],
-            ).context("Failed to create batch_id index")?;
+            )?;
         }
-
-        // Migration: Add thumbnail column to images table for fast loading
-        if !columns.contains(&"thumbnail".to_string()) {
-            self.conn.execute(
-                "ALTER TABLE images ADD COLUMN thumbnail TEXT",
-                [],
-            ).context("Failed to add thumbnail to images table")?;
+        if !image_columns.contains(&"thumbnail".to_string()) {
+            self.conn
+                .execute("ALTER TABLE images ADD COLUMN thumbnail TEXT", [])?;
         }
-
-        // Migration: Add asset_type column to images table for categorization/filtering (legacy)
-        if !columns.contains(&"asset_type".to_string()) {
-            self.conn.execute(
-                "ALTER TABLE images ADD COLUMN asset_type TEXT",
-                [],
-            ).context("Failed to add asset_type to images table")?;
-        }
-
-        // Migration: Add asset_types column (JSON array) for multiple tags per image
-        if !columns.contains(&"asset_types".to_string()) {
+        if !image_columns.contains(&"asset_types".to_string()) {
             self.conn.execute(
                 "ALTER TABLE images ADD COLUMN asset_types TEXT NOT NULL DEFAULT '[]'",
                 [],
-            ).context("Failed to add asset_types to images table")?;
-
-            // Migrate existing asset_type data to asset_types array
-            self.conn.execute(
-                "UPDATE images SET asset_types = json_array(asset_type) WHERE asset_type IS NOT NULL AND asset_type != ''",
-                [],
-            ).context("Failed to migrate asset_type to asset_types")?;
+            )?;
+        }
+        if !image_columns.contains(&"provider_type".to_string()) {
+            self.conn
+                .execute("ALTER TABLE images ADD COLUMN provider_type TEXT", [])?;
         }
 
-        // Migration: Video frame columns
-        let video_columns: Vec<String> = self.conn
+        let video_columns: Vec<String> = self
+            .conn
             .prepare("PRAGMA table_info(videos)")?
             .query_map([], |row| row.get::<_, String>(1))?
             .filter_map(|r| r.ok())
             .collect();
 
-        // Migration: Rename thumbnail to first_frame_thumbnail (SQLite doesn't support RENAME COLUMN in older versions)
-        // So we add new column and copy data if old column exists
-        if video_columns.contains(&"thumbnail".to_string()) && !video_columns.contains(&"first_frame_thumbnail".to_string()) {
-            self.conn.execute(
+        for (col, ddl) in [
+            (
+                "first_frame_thumbnail",
                 "ALTER TABLE videos ADD COLUMN first_frame_thumbnail TEXT",
-                [],
-            ).context("Failed to add first_frame_thumbnail to videos table")?;
-            // Copy existing thumbnail data to first_frame_thumbnail
-            self.conn.execute(
-                "UPDATE videos SET first_frame_thumbnail = thumbnail WHERE thumbnail IS NOT NULL",
-                [],
-            ).context("Failed to migrate thumbnail to first_frame_thumbnail")?;
-        } else if !video_columns.contains(&"first_frame_thumbnail".to_string()) {
-            self.conn.execute(
-                "ALTER TABLE videos ADD COLUMN first_frame_thumbnail TEXT",
-                [],
-            ).context("Failed to add first_frame_thumbnail to videos table")?;
-        }
-
-        // Migration: Add last_frame_thumbnail column
-        if !video_columns.contains(&"last_frame_thumbnail".to_string()) {
-            self.conn.execute(
+            ),
+            (
+                "last_frame_thumbnail",
                 "ALTER TABLE videos ADD COLUMN last_frame_thumbnail TEXT",
-                [],
-            ).context("Failed to add last_frame_thumbnail to videos table")?;
-        }
-
-        // Migration: Add first_frame_path column
-        if !video_columns.contains(&"first_frame_path".to_string()) {
-            self.conn.execute(
+            ),
+            (
+                "first_frame_path",
                 "ALTER TABLE videos ADD COLUMN first_frame_path TEXT",
-                [],
-            ).context("Failed to add first_frame_path to videos table")?;
-        }
-
-        // Migration: Add last_frame_path column
-        if !video_columns.contains(&"last_frame_path".to_string()) {
-            self.conn.execute(
+            ),
+            (
+                "last_frame_path",
                 "ALTER TABLE videos ADD COLUMN last_frame_path TEXT",
-                [],
-            ).context("Failed to add last_frame_path to videos table")?;
-        }
-
-        // Migration: Add vocals_path column for separated vocals audio
-        if !video_columns.contains(&"vocals_path".to_string()) {
-            self.conn.execute(
+            ),
+            (
+                "vocals_path",
                 "ALTER TABLE videos ADD COLUMN vocals_path TEXT",
-                [],
-            ).context("Failed to add vocals_path to videos table")?;
-        }
-
-        // Migration: Add bgm_path column for separated BGM audio
-        if !video_columns.contains(&"bgm_path".to_string()) {
-            self.conn.execute(
-                "ALTER TABLE videos ADD COLUMN bgm_path TEXT",
-                [],
-            ).context("Failed to add bgm_path to videos table")?;
-        }
-
-        // Migration: Add asset_types column to videos (JSON array for tags)
-        if !video_columns.contains(&"asset_types".to_string()) {
-            self.conn.execute(
+            ),
+            ("bgm_path", "ALTER TABLE videos ADD COLUMN bgm_path TEXT"),
+            (
+                "asset_types",
                 "ALTER TABLE videos ADD COLUMN asset_types TEXT NOT NULL DEFAULT '[]'",
-                [],
-            ).context("Failed to add asset_types to videos table")?;
+            ),
+            (
+                "provider_type",
+                "ALTER TABLE videos ADD COLUMN provider_type TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "credentials_snapshot",
+                "ALTER TABLE videos ADD COLUMN credentials_snapshot BLOB NOT NULL DEFAULT x''",
+            ),
+            (
+                "no_proxy",
+                "ALTER TABLE videos ADD COLUMN no_proxy INTEGER NOT NULL DEFAULT 0",
+            ),
+        ] {
+            if !video_columns.contains(&col.to_string()) {
+                self.conn
+                    .execute(ddl, [])
+                    .with_context(|| format!("Failed to add column {} to videos", col))?;
+            }
         }
 
         Ok(())
     }
 
     // ========================================================================
-    // Config Methods
+    // App Settings Methods (plain key-value)
     // ========================================================================
 
-    /// Save config to database (encrypted)
-    pub fn save_config(&self, config: &AppConfig) -> Result<()> {
-        let json = serde_json::to_string(config)
-            .context("Failed to serialize config")?;
+    pub fn load_app_settings(&self) -> Result<AppSettings> {
+        let mut settings = AppSettings::default();
+        let mut stmt = self.conn.prepare("SELECT key, value FROM app_settings")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows.flatten() {
+            match row.0.as_str() {
+                "output_directory" => settings.output_directory = row.1,
+                "output_format" => settings.output_format = row.1,
+                "default_image_provider_type" => settings.default_image_provider_type = Some(row.1),
+                "default_video_provider_type" => settings.default_video_provider_type = Some(row.1),
+                _ => {}
+            }
+        }
+        Ok(settings)
+    }
 
+    pub fn save_app_settings(&self, settings: &AppSettings) -> Result<()> {
+        let pairs: Vec<(&str, Option<&str>)> = vec![
+            ("output_directory", Some(&settings.output_directory)),
+            ("output_format", Some(&settings.output_format)),
+            (
+                "default_image_provider_type",
+                settings.default_image_provider_type.as_deref(),
+            ),
+            (
+                "default_video_provider_type",
+                settings.default_video_provider_type.as_deref(),
+            ),
+        ];
+        for (k, v) in pairs {
+            match v {
+                Some(val) => {
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+                        params![k, val],
+                    )?;
+                }
+                None => {
+                    self.conn
+                        .execute("DELETE FROM app_settings WHERE key = ?1", params![k])?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // ========================================================================
+    // Provider Methods (credentials encrypted at rest)
+    // ========================================================================
+
+    /// Upsert a provider by type. created_at is set on first insert; subsequent
+    /// saves preserve it.
+    pub fn save_provider(&self, record: &ProviderRecord) -> Result<()> {
+        let creds_json = serde_json::to_string(&record.credentials)
+            .context("Failed to serialize credentials")?;
         let key = derive_key(DEFAULT_PASSWORD);
-        let encrypted = encrypt(json.as_bytes(), &key)
-            .context("Failed to encrypt config")?;
-
+        let encrypted =
+            encrypt(creds_json.as_bytes(), &key).context("Failed to encrypt credentials")?;
         self.conn.execute(
-            "INSERT OR REPLACE INTO config (key, value) VALUES (?1, ?2)",
-            params![CONFIG_KEY, encrypted],
-        ).context("Failed to save config")?;
-
+            "INSERT INTO providers (provider_type, credentials, image_model, video_model, no_proxy, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(provider_type) DO UPDATE SET
+                credentials = excluded.credentials,
+                image_model = excluded.image_model,
+                video_model = excluded.video_model,
+                no_proxy = excluded.no_proxy",
+            params![
+                record.provider_type,
+                encrypted,
+                record.image_model,
+                record.video_model,
+                record.no_proxy as i32,
+                record.created_at.to_rfc3339(),
+            ],
+        ).context("Failed to save provider")?;
         Ok(())
     }
 
-    /// Load config from database (decrypted)
-    pub fn load_config(&self) -> Result<AppConfig> {
-        let result: rusqlite::Result<Vec<u8>> = self.conn.query_row(
-            "SELECT value FROM config WHERE key = ?1",
-            params![CONFIG_KEY],
-            |row| row.get(0),
-        );
+    pub fn delete_provider(&self, provider_type: &str) -> Result<bool> {
+        let rows = self.conn.execute(
+            "DELETE FROM providers WHERE provider_type = ?1",
+            params![provider_type],
+        )?;
+        // Clear as default if this provider was the default in app_settings.
+        self.conn.execute(
+            "DELETE FROM app_settings WHERE (key = 'default_image_provider_type' OR key = 'default_video_provider_type') AND value = ?1",
+            params![provider_type],
+        )?;
+        Ok(rows > 0)
+    }
 
-        match result {
-            Ok(encrypted) => {
-                let key = derive_key(DEFAULT_PASSWORD);
-                let decrypted = decrypt(&encrypted, &key)
-                    .context("Failed to decrypt config")?;
+    pub fn list_providers(&self) -> Result<Vec<ProviderRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT provider_type, credentials, image_model, video_model, no_proxy, created_at
+             FROM providers ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map([], Self::map_provider_row)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to list providers")
+    }
 
-                let json = String::from_utf8(decrypted)
-                    .context("Invalid UTF-8 in config")?;
-
-                serde_json::from_str(&json)
-                    .context("Failed to parse config JSON")
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                Ok(AppConfig::default())
-            }
-            Err(e) => Err(e.into()),
+    pub fn get_provider(&self, provider_type: &str) -> Result<Option<ProviderRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT provider_type, credentials, image_model, video_model, no_proxy, created_at
+             FROM providers WHERE provider_type = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![provider_type], Self::map_provider_row)?;
+        match rows.next() {
+            Some(Ok(r)) => Ok(Some(r)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
         }
     }
 
-    /// Delete config from database
-    pub fn delete_config(&self) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM config WHERE key = ?1",
-            params![CONFIG_KEY],
-        ).context("Failed to delete config")?;
-        Ok(())
+    fn map_provider_row(row: &rusqlite::Row) -> rusqlite::Result<ProviderRecord> {
+        let encrypted: Vec<u8> = row.get(1)?;
+        let no_proxy_int: i64 = row.get(4)?;
+        let created_at_str: String = row.get(5)?;
+        let key = derive_key(DEFAULT_PASSWORD);
+        let credentials: HashMap<String, String> = decrypt(&encrypted, &key)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
+        Ok(ProviderRecord {
+            provider_type: row.get(0)?,
+            credentials,
+            image_model: row.get(2)?,
+            video_model: row.get(3)?,
+            no_proxy: no_proxy_int != 0,
+            created_at: DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+        })
+    }
+
+    /// Encrypt a credentials map (used for video task snapshots).
+    pub fn encrypt_credentials(credentials: &HashMap<String, String>) -> Result<Vec<u8>> {
+        let json = serde_json::to_string(credentials)?;
+        let key = derive_key(DEFAULT_PASSWORD);
+        encrypt(json.as_bytes(), &key).context("Failed to encrypt credentials")
+    }
+
+    /// Decrypt a credentials blob.
+    pub fn decrypt_credentials(blob: &[u8]) -> Result<HashMap<String, String>> {
+        let key = derive_key(DEFAULT_PASSWORD);
+        let bytes = decrypt(blob, &key).context("Failed to decrypt credentials")?;
+        let json = String::from_utf8(bytes)?;
+        Ok(serde_json::from_str(&json)?)
     }
 
     // ========================================================================
@@ -469,24 +623,26 @@ impl Database {
     // ========================================================================
 
     pub fn insert_project(&self, record: &ProjectRecord) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO projects (id, name, description, created_at, updated_at)
+        self.conn
+            .execute(
+                "INSERT INTO projects (id, name, description, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                record.id,
-                record.name,
-                record.description,
-                record.created_at.to_rfc3339(),
-                record.updated_at.to_rfc3339(),
-            ],
-        ).context("Failed to insert project")?;
+                params![
+                    record.id,
+                    record.name,
+                    record.description,
+                    record.created_at.to_rfc3339(),
+                    record.updated_at.to_rfc3339(),
+                ],
+            )
+            .context("Failed to insert project")?;
         Ok(())
     }
 
     pub fn get_projects(&self) -> Result<Vec<ProjectRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, description, created_at, updated_at
-             FROM projects ORDER BY updated_at DESC"
+             FROM projects ORDER BY updated_at DESC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -505,12 +661,13 @@ impl Database {
             })
         })?;
 
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to get projects")
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to get projects")
     }
 
     pub fn get_project_by_id(&self, id: &str) -> Result<Option<ProjectRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, description, created_at, updated_at FROM projects WHERE id = ?1"
+            "SELECT id, name, description, created_at, updated_at FROM projects WHERE id = ?1",
         )?;
 
         let mut rows = stmt.query_map(params![id], |row| {
@@ -545,7 +702,9 @@ impl Database {
     }
 
     pub fn delete_project(&self, id: &str) -> Result<bool> {
-        let rows = self.conn.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
+        let rows = self
+            .conn
+            .execute("DELETE FROM projects WHERE id = ?1", params![id])?;
         Ok(rows > 0)
     }
 
@@ -575,7 +734,7 @@ impl Database {
     pub fn get_assets_by_project(&self, project_id: &str) -> Result<Vec<AssetRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, name, asset_type, tags, file_path, thumbnail, created_at
-             FROM assets WHERE project_id = ?1 ORDER BY asset_type, name"
+             FROM assets WHERE project_id = ?1 ORDER BY asset_type, name",
         )?;
 
         let rows = stmt.query_map(params![project_id], |row| {
@@ -595,13 +754,14 @@ impl Database {
             })
         })?;
 
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to get assets")
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to get assets")
     }
 
     pub fn get_asset_by_id(&self, id: &str) -> Result<Option<AssetRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, name, asset_type, tags, file_path, thumbnail, created_at
-             FROM assets WHERE id = ?1"
+             FROM assets WHERE id = ?1",
         )?;
 
         let mut rows = stmt.query_map(params![id], |row| {
@@ -628,7 +788,13 @@ impl Database {
         }
     }
 
-    pub fn update_asset(&self, id: &str, name: &str, asset_type: &str, tags: &[String]) -> Result<bool> {
+    pub fn update_asset(
+        &self,
+        id: &str,
+        name: &str,
+        asset_type: &str,
+        tags: &[String],
+    ) -> Result<bool> {
         let tags_json = serde_json::to_string(tags)?;
         let rows = self.conn.execute(
             "UPDATE assets SET name = ?1, asset_type = ?2, tags = ?3 WHERE id = ?4",
@@ -638,7 +804,9 @@ impl Database {
     }
 
     pub fn delete_asset(&self, id: &str) -> Result<bool> {
-        let rows = self.conn.execute("DELETE FROM assets WHERE id = ?1", params![id])?;
+        let rows = self
+            .conn
+            .execute("DELETE FROM assets WHERE id = ?1", params![id])?;
         Ok(rows > 0)
     }
 
@@ -651,8 +819,8 @@ impl Database {
         let asset_types_json = serde_json::to_string(&record.asset_types)?;
 
         self.conn.execute(
-            "INSERT INTO images (id, project_id, batch_id, file_path, thumbnail, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO images (id, project_id, batch_id, file_path, thumbnail, prompt, provider_type, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 record.id,
                 record.project_id,
@@ -660,6 +828,7 @@ impl Database {
                 record.file_path,
                 record.thumbnail,
                 record.prompt,
+                record.provider_type,
                 record.model,
                 record.size,
                 record.aspect_ratio,
@@ -674,9 +843,14 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_images_by_project(&self, project_id: &str, limit: i64, offset: i64) -> Result<Vec<ImageRecord>> {
+    pub fn get_images_by_project(
+        &self,
+        project_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<ImageRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
+            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, provider_type, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
              FROM images
              WHERE project_id = ?1
              ORDER BY created_at DESC
@@ -684,12 +858,13 @@ impl Database {
         )?;
 
         let rows = stmt.query_map(params![project_id, limit, offset], Self::map_image_row)?;
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to get images by project")
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to get images by project")
     }
 
     pub fn get_image_by_id(&self, id: &str) -> Result<Option<ImageRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
+            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, provider_type, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
              FROM images WHERE id = ?1"
         )?;
 
@@ -704,7 +879,7 @@ impl Database {
     pub fn search_images(&self, query: &str, limit: i64) -> Result<Vec<ImageRecord>> {
         let search_pattern = format!("%{}%", query);
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
+            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, provider_type, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
              FROM images
              WHERE prompt LIKE ?1
              ORDER BY created_at DESC
@@ -712,11 +887,14 @@ impl Database {
         )?;
 
         let rows = stmt.query_map(params![search_pattern, limit], Self::map_image_row)?;
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to search images")
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to search images")
     }
 
     pub fn delete_image(&self, id: &str) -> Result<bool> {
-        let rows_affected = self.conn.execute("DELETE FROM images WHERE id = ?1", params![id])?;
+        let rows_affected = self
+            .conn
+            .execute("DELETE FROM images WHERE id = ?1", params![id])?;
         Ok(rows_affected > 0)
     }
 
@@ -732,14 +910,15 @@ impl Database {
     /// Get images that don't have thumbnails cached
     pub fn get_images_without_thumbnails(&self, limit: i64) -> Result<Vec<ImageRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
+            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, provider_type, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
              FROM images
              WHERE thumbnail IS NULL
              LIMIT ?1"
         )?;
 
         let rows = stmt.query_map(params![limit], Self::map_image_row)?;
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to get images without thumbnails")
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to get images without thumbnails")
     }
 
     pub fn get_image_count(&self, project_id: Option<&str>) -> Result<i64> {
@@ -749,7 +928,9 @@ impl Database {
                 params![pid],
                 |row| row.get(0),
             )?,
-            None => self.conn.query_row("SELECT COUNT(*) FROM images", [], |row| row.get(0))?,
+            None => self
+                .conn
+                .query_row("SELECT COUNT(*) FROM images", [], |row| row.get(0))?,
         };
         Ok(count)
     }
@@ -757,11 +938,14 @@ impl Database {
     /// Add an asset type tag to an image
     pub fn add_image_asset_type(&self, id: &str, asset_type: &str) -> Result<bool> {
         // Get current asset_types
-        let current: String = self.conn.query_row(
-            "SELECT asset_types FROM images WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        ).unwrap_or_else(|_| "[]".to_string());
+        let current: String = self
+            .conn
+            .query_row(
+                "SELECT asset_types FROM images WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "[]".to_string());
 
         let mut types: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
 
@@ -782,11 +966,14 @@ impl Database {
     /// Remove an asset type tag from an image
     pub fn remove_image_asset_type(&self, id: &str, asset_type: &str) -> Result<bool> {
         // Get current asset_types
-        let current: String = self.conn.query_row(
-            "SELECT asset_types FROM images WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        ).unwrap_or_else(|_| "[]".to_string());
+        let current: String = self
+            .conn
+            .query_row(
+                "SELECT asset_types FROM images WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "[]".to_string());
 
         let mut types: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
 
@@ -809,11 +996,14 @@ impl Database {
     /// Add an asset type tag to a video
     pub fn add_video_asset_type(&self, id: &str, asset_type: &str) -> Result<bool> {
         // Get current asset_types
-        let current: String = self.conn.query_row(
-            "SELECT asset_types FROM videos WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        ).unwrap_or_else(|_| "[]".to_string());
+        let current: String = self
+            .conn
+            .query_row(
+                "SELECT asset_types FROM videos WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "[]".to_string());
 
         let mut types: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
 
@@ -834,11 +1024,14 @@ impl Database {
     /// Remove an asset type tag from a video
     pub fn remove_video_asset_type(&self, id: &str, asset_type: &str) -> Result<bool> {
         // Get current asset_types
-        let current: String = self.conn.query_row(
-            "SELECT asset_types FROM videos WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        ).unwrap_or_else(|_| "[]".to_string());
+        let current: String = self
+            .conn
+            .query_row(
+                "SELECT asset_types FROM videos WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "[]".to_string());
 
         let mut types: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
 
@@ -865,7 +1058,7 @@ impl Database {
         let mut counts = Vec::new();
 
         for asset_type in asset_types {
-            let pattern = format!("%\"{}\"%" , asset_type);
+            let pattern = format!("%\"{}\"%", asset_type);
             // Count images
             let image_count: i64 = self.conn.query_row(
                 "SELECT COUNT(*) FROM images WHERE project_id = ?1 AND asset_types LIKE ?2",
@@ -888,24 +1081,39 @@ impl Database {
     }
 
     /// Get images filtered by asset_type (images that have this type in their array)
-    pub fn get_images_by_asset_type(&self, project_id: &str, asset_type: &str, limit: i64, offset: i64) -> Result<Vec<ImageRecord>> {
-        let pattern = format!("%\"{}\"%" , asset_type);
+    pub fn get_images_by_asset_type(
+        &self,
+        project_id: &str,
+        asset_type: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<ImageRecord>> {
+        let pattern = format!("%\"{}\"%", asset_type);
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
+            "SELECT id, project_id, batch_id, file_path, thumbnail, prompt, provider_type, model, size, aspect_ratio, generation_type, reference_images, tokens_used, created_at, asset_types
              FROM images
              WHERE project_id = ?1 AND asset_types LIKE ?2
              ORDER BY created_at DESC
              LIMIT ?3 OFFSET ?4"
         )?;
 
-        let rows = stmt.query_map(params![project_id, pattern, limit, offset], Self::map_image_row)?;
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to get images by asset type")
+        let rows = stmt.query_map(
+            params![project_id, pattern, limit, offset],
+            Self::map_image_row,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to get images by asset type")
     }
 
     fn map_image_row(row: &rusqlite::Row) -> rusqlite::Result<ImageRecord> {
-        let reference_json: String = row.get(10)?;
-        let created_at_str: String = row.get(12)?;
-        let asset_types_json: String = row.get::<_, Option<String>>(13)?.unwrap_or_else(|| "[]".to_string());
+        // Columns: 0 id, 1 project_id, 2 batch_id, 3 file_path, 4 thumbnail, 5 prompt,
+        //  6 provider_type, 7 model, 8 size, 9 aspect_ratio, 10 generation_type,
+        //  11 reference_images, 12 tokens_used, 13 created_at, 14 asset_types
+        let reference_json: String = row.get(11)?;
+        let created_at_str: String = row.get(13)?;
+        let asset_types_json: String = row
+            .get::<_, Option<String>>(14)?
+            .unwrap_or_else(|| "[]".to_string());
         Ok(ImageRecord {
             id: row.get(0)?,
             project_id: row.get(1)?,
@@ -913,12 +1121,13 @@ impl Database {
             file_path: row.get(3)?,
             thumbnail: row.get(4)?,
             prompt: row.get(5)?,
-            model: row.get(6)?,
-            size: row.get(7)?,
-            aspect_ratio: row.get(8)?,
-            generation_type: row.get(9)?,
+            provider_type: row.get(6)?,
+            model: row.get(7)?,
+            size: row.get(8)?,
+            aspect_ratio: row.get(9)?,
+            generation_type: row.get(10)?,
             reference_images: serde_json::from_str(&reference_json).unwrap_or_default(),
-            tokens_used: row.get(11)?,
+            tokens_used: row.get(12)?,
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -932,9 +1141,10 @@ impl Database {
 
     pub fn insert_video(&self, record: &VideoRecord) -> Result<()> {
         let asset_types_json = serde_json::to_string(&record.asset_types)?;
+        let creds_blob = Self::encrypt_credentials(&record.credentials_snapshot)?;
         self.conn.execute(
-            "INSERT INTO videos (id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+            "INSERT INTO videos (id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, provider_type, credentials_snapshot, no_proxy, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
             params![
                 record.id,
                 record.project_id,
@@ -947,6 +1157,9 @@ impl Database {
                 record.vocals_path,
                 record.bgm_path,
                 record.prompt,
+                record.provider_type,
+                creds_blob,
+                record.no_proxy as i32,
                 record.model,
                 record.generation_type,
                 record.source_image_id,
@@ -965,9 +1178,14 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_videos_by_project(&self, project_id: &str, limit: i64, offset: i64) -> Result<Vec<VideoRecord>> {
+    pub fn get_videos_by_project(
+        &self,
+        project_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<VideoRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
+            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, provider_type, credentials_snapshot, no_proxy, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
              FROM videos
              WHERE project_id = ?1
              ORDER BY created_at DESC
@@ -975,22 +1193,33 @@ impl Database {
         )?;
 
         let rows = stmt.query_map(params![project_id, limit, offset], Self::map_video_row)?;
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to get videos by project")
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to get videos by project")
     }
 
-    pub fn get_videos_by_asset_type(&self, project_id: &str, asset_type: &str, limit: i64, offset: i64) -> Result<Vec<VideoRecord>> {
+    pub fn get_videos_by_asset_type(
+        &self,
+        project_id: &str,
+        asset_type: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<VideoRecord>> {
         // SQLite JSON query: asset_types contains the given type
         let pattern = format!("%\"{}%", asset_type);
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
+            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, provider_type, credentials_snapshot, no_proxy, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
              FROM videos
              WHERE project_id = ?1 AND asset_types LIKE ?2
              ORDER BY created_at DESC
              LIMIT ?3 OFFSET ?4"
         )?;
 
-        let rows = stmt.query_map(params![project_id, pattern, limit, offset], Self::map_video_row)?;
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to get videos by asset type")
+        let rows = stmt.query_map(
+            params![project_id, pattern, limit, offset],
+            Self::map_video_row,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to get videos by asset type")
     }
 
     pub fn get_video_count_by_asset_type(&self, project_id: &str, asset_type: &str) -> Result<i64> {
@@ -1005,7 +1234,7 @@ impl Database {
 
     pub fn get_video_by_id(&self, id: &str) -> Result<Option<VideoRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
+            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, provider_type, credentials_snapshot, no_proxy, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
              FROM videos WHERE id = ?1"
         )?;
 
@@ -1019,14 +1248,15 @@ impl Database {
 
     pub fn get_pending_videos(&self) -> Result<Vec<VideoRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
+            "SELECT id, project_id, task_id, file_path, first_frame_thumbnail, last_frame_thumbnail, first_frame_path, last_frame_path, vocals_path, bgm_path, prompt, provider_type, credentials_snapshot, no_proxy, model, generation_type, source_image_id, resolution, duration, fps, aspect_ratio, status, error_message, tokens_used, created_at, completed_at, asset_types
              FROM videos
              WHERE status IN ('pending', 'processing')
              ORDER BY created_at ASC"
         )?;
 
         let rows = stmt.query_map([], Self::map_video_row)?;
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to get pending videos")
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to get pending videos")
     }
 
     pub fn update_video_status(&self, id: &str, update: &VideoStatusUpdate) -> Result<bool> {
@@ -1044,7 +1274,9 @@ impl Database {
     }
 
     pub fn delete_video(&self, id: &str) -> Result<bool> {
-        let rows = self.conn.execute("DELETE FROM videos WHERE id = ?1", params![id])?;
+        let rows = self
+            .conn
+            .execute("DELETE FROM videos WHERE id = ?1", params![id])?;
         Ok(rows > 0)
     }
 
@@ -1055,15 +1287,31 @@ impl Database {
                 params![pid],
                 |row| row.get(0),
             )?,
-            None => self.conn.query_row("SELECT COUNT(*) FROM videos", [], |row| row.get(0))?,
+            None => self
+                .conn
+                .query_row("SELECT COUNT(*) FROM videos", [], |row| row.get(0))?,
         };
         Ok(count)
     }
 
     fn map_video_row(row: &rusqlite::Row) -> rusqlite::Result<VideoRecord> {
-        let created_at_str: String = row.get(21)?;
-        let completed_at_str: Option<String> = row.get(22)?;
-        let asset_types_json: String = row.get::<_, Option<String>>(23)?.unwrap_or_else(|| "[]".to_string());
+        // Columns: 0 id, 1 project_id, 2 task_id, 3 file_path,
+        //          4 first_frame_thumbnail, 5 last_frame_thumbnail,
+        //          6 first_frame_path, 7 last_frame_path,
+        //          8 vocals_path, 9 bgm_path, 10 prompt,
+        //          11 provider_type, 12 credentials_snapshot, 13 no_proxy,
+        //          14 model, 15 generation_type, 16 source_image_id,
+        //          17 resolution, 18 duration, 19 fps, 20 aspect_ratio,
+        //          21 status, 22 error_message, 23 tokens_used,
+        //          24 created_at, 25 completed_at, 26 asset_types
+        let creds_blob: Vec<u8> = row.get(12)?;
+        let credentials_snapshot = Self::decrypt_credentials(&creds_blob).unwrap_or_default();
+        let no_proxy_int: i64 = row.get(13)?;
+        let created_at_str: String = row.get(24)?;
+        let completed_at_str: Option<String> = row.get(25)?;
+        let asset_types_json: String = row
+            .get::<_, Option<String>>(26)?
+            .unwrap_or_else(|| "[]".to_string());
         Ok(VideoRecord {
             id: row.get(0)?,
             project_id: row.get(1)?,
@@ -1076,16 +1324,19 @@ impl Database {
             vocals_path: row.get(8)?,
             bgm_path: row.get(9)?,
             prompt: row.get(10)?,
-            model: row.get(11)?,
-            generation_type: row.get(12)?,
-            source_image_id: row.get(13)?,
-            resolution: row.get(14)?,
-            duration: row.get(15)?,
-            fps: row.get(16)?,
-            aspect_ratio: row.get(17)?,
-            status: row.get(18)?,
-            error_message: row.get(19)?,
-            tokens_used: row.get(20)?,
+            provider_type: row.get(11)?,
+            credentials_snapshot,
+            no_proxy: no_proxy_int != 0,
+            model: row.get(14)?,
+            generation_type: row.get(15)?,
+            source_image_id: row.get(16)?,
+            resolution: row.get(17)?,
+            duration: row.get(18)?,
+            fps: row.get(19)?,
+            aspect_ratio: row.get(20)?,
+            status: row.get(21)?,
+            error_message: row.get(22)?,
+            tokens_used: row.get(23)?,
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -1134,18 +1385,28 @@ impl Database {
             "SELECT id, file_path, first_frame_path, last_frame_path, vocals_path, bgm_path FROM videos WHERE file_path IS NOT NULL"
         )?;
         let video_rows: Vec<VideoCleanupRow> = stmt
-            .query_map([], |row| Ok(VideoCleanupRow {
-                id: row.get(0)?,
-                file_path: row.get(1)?,
-                first_frame_path: row.get(2)?,
-                last_frame_path: row.get(3)?,
-                vocals_path: row.get(4)?,
-                bgm_path: row.get(5)?,
-            }))?
+            .query_map([], |row| {
+                Ok(VideoCleanupRow {
+                    id: row.get(0)?,
+                    file_path: row.get(1)?,
+                    first_frame_path: row.get(2)?,
+                    last_frame_path: row.get(3)?,
+                    vocals_path: row.get(4)?,
+                    bgm_path: row.get(5)?,
+                })
+            })?
             .filter_map(|r| r.ok())
             .collect();
 
-        for VideoCleanupRow { id, file_path, first_frame_path, last_frame_path, vocals_path, bgm_path } in video_rows {
+        for VideoCleanupRow {
+            id,
+            file_path,
+            first_frame_path,
+            last_frame_path,
+            vocals_path,
+            bgm_path,
+        } in video_rows
+        {
             if !std::path::Path::new(&file_path).exists() {
                 // Delete frame files if they exist
                 if let Some(first_path) = first_frame_path {

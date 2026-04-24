@@ -1,4 +1,4 @@
-use crate::commands::generation::DbState;
+use crate::commands::generation::AppState;
 use crate::image_processing::{create_thumbnail_base64, image_to_base64};
 use crate::storage::ImageRecord;
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,7 @@ pub struct GalleryResponse {
 
 #[tauri::command]
 pub async fn get_gallery(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     project_id: String,
     page: i64,
     page_size: i64,
@@ -47,7 +47,7 @@ pub async fn get_gallery(
     let offset = page * page_size;
 
     let (images, total) = {
-        let db = db_state.database.lock().map_err(|e| e.to_string())?;
+        let db = state.db.lock().map_err(|e| e.to_string())?;
         let images = db
             .get_images_by_project(&project_id, page_size, offset)
             .map_err(|e| e.to_string())?;
@@ -73,11 +73,11 @@ pub async fn get_gallery(
 
 #[tauri::command]
 pub async fn search_gallery(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     query: String,
     limit: i64,
 ) -> Result<Vec<GalleryImage>, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let images = db.search_images(&query, limit).map_err(|e| e.to_string())?;
 
     let gallery_images: Vec<GalleryImage> = images
@@ -90,10 +90,10 @@ pub async fn search_gallery(
 
 #[tauri::command]
 pub async fn get_image_detail(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     id: String,
 ) -> Result<Option<GalleryImage>, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let record = db.get_image_by_id(&id).map_err(|e| e.to_string())?;
 
     Ok(record.map(|r| map_to_gallery_image(r, false)))
@@ -101,11 +101,11 @@ pub async fn get_image_detail(
 
 #[tauri::command]
 pub async fn delete_gallery_image(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     id: String,
     delete_file: bool,
 ) -> Result<bool, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
 
     // Get file path before deleting
     if delete_file {
@@ -113,7 +113,13 @@ pub async fn delete_gallery_image(
             // Delete image file
             let _ = std::fs::remove_file(&record.file_path);
             // Delete metadata file if exists
-            let metadata_path = format!("{}.json", record.file_path.trim_end_matches(".jpg").trim_end_matches(".png"));
+            let metadata_path = format!(
+                "{}.json",
+                record
+                    .file_path
+                    .trim_end_matches(".jpg")
+                    .trim_end_matches(".png")
+            );
             let _ = std::fs::remove_file(&metadata_path);
         }
     }
@@ -124,12 +130,11 @@ pub async fn delete_gallery_image(
 /// Regenerate thumbnails for images that don't have them cached.
 /// Returns the number of images updated.
 #[tauri::command]
-pub async fn regenerate_thumbnails(
-    db_state: State<'_, DbState>,
-) -> Result<u32, String> {
+pub async fn regenerate_thumbnails(state: State<'_, AppState>) -> Result<u32, String> {
     let images = {
-        let db = db_state.database.lock().map_err(|e| e.to_string())?;
-        db.get_images_without_thumbnails(100).map_err(|e| e.to_string())?
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.get_images_without_thumbnails(100)
+            .map_err(|e| e.to_string())?
     };
 
     let mut updated = 0u32;
@@ -139,8 +144,11 @@ pub async fn regenerate_thumbnails(
             // Generate thumbnail
             if let Ok(thumbnail) = create_thumbnail_base64(&data, 200) {
                 // Update database
-                let db = db_state.database.lock().map_err(|e| e.to_string())?;
-                if db.update_image_thumbnail(&image.id, &thumbnail).map_err(|e| e.to_string())? {
+                let db = state.db.lock().map_err(|e| e.to_string())?;
+                if db
+                    .update_image_thumbnail(&image.id, &thumbnail)
+                    .map_err(|e| e.to_string())?
+                {
                     updated += 1;
                 }
             }
@@ -153,11 +161,11 @@ pub async fn regenerate_thumbnails(
 /// Add an asset type tag to an image
 #[tauri::command]
 pub async fn add_image_tag(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     image_id: String,
     asset_type: String,
 ) -> Result<bool, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.add_image_asset_type(&image_id, &asset_type)
         .map_err(|e| e.to_string())
 }
@@ -165,11 +173,11 @@ pub async fn add_image_tag(
 /// Remove an asset type tag from an image
 #[tauri::command]
 pub async fn remove_image_tag(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     image_id: String,
     asset_type: String,
 ) -> Result<bool, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.remove_image_asset_type(&image_id, &asset_type)
         .map_err(|e| e.to_string())
 }
@@ -177,11 +185,13 @@ pub async fn remove_image_tag(
 /// Get counts of images by asset type for a project
 #[tauri::command]
 pub async fn get_asset_type_counts(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     project_id: String,
 ) -> Result<AssetTypeCounts, String> {
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
-    let counts = db.get_asset_type_counts(&project_id).map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let counts = db
+        .get_asset_type_counts(&project_id)
+        .map_err(|e| e.to_string())?;
 
     // Convert Vec<(String, i64)> to AssetTypeCounts struct
     let mut result = AssetTypeCounts {
@@ -207,7 +217,7 @@ pub async fn get_asset_type_counts(
 /// Get images filtered by asset type
 #[tauri::command]
 pub async fn get_gallery_by_asset_type(
-    db_state: State<'_, DbState>,
+    state: State<'_, AppState>,
     project_id: String,
     asset_type: String,
     page: i64,
@@ -216,7 +226,7 @@ pub async fn get_gallery_by_asset_type(
 ) -> Result<GalleryResponse, String> {
     let offset = page * page_size;
 
-    let db = db_state.database.lock().map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let images = db
         .get_images_by_asset_type(&project_id, &asset_type, page_size, offset)
         .map_err(|e| e.to_string())?;
@@ -241,7 +251,9 @@ fn map_to_gallery_image(record: ImageRecord, include_thumbnail: bool) -> Gallery
     // Use cached thumbnail from database (instant load)
     // Only fall back to on-the-fly generation for old images without cached thumbnails
     let thumbnail = if include_thumbnail {
-        record.thumbnail.or_else(|| load_thumbnail_fallback(&record.file_path).ok())
+        record
+            .thumbnail
+            .or_else(|| load_thumbnail_fallback(&record.file_path).ok())
     } else {
         None
     };
@@ -290,12 +302,15 @@ pub async fn combine_image_with_mask(
     use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
 
     // Load original image
-    let image_data = std::fs::read(&image_path).map_err(|e| format!("Failed to read image: {}", e))?;
-    let original = image::load_from_memory(&image_data).map_err(|e| format!("Failed to decode image: {}", e))?;
+    let image_data =
+        std::fs::read(&image_path).map_err(|e| format!("Failed to read image: {}", e))?;
+    let original = image::load_from_memory(&image_data)
+        .map_err(|e| format!("Failed to decode image: {}", e))?;
 
     // Decode mask from base64
     let mask_data = decode_base64_image(&mask_base64)?;
-    let mask = image::load_from_memory(&mask_data).map_err(|e| format!("Failed to decode mask: {}", e))?;
+    let mask =
+        image::load_from_memory(&mask_data).map_err(|e| format!("Failed to decode mask: {}", e))?;
 
     // Resize mask to match original if needed
     let mask = if mask.dimensions() != original.dimensions() {
@@ -341,7 +356,11 @@ pub async fn combine_image_with_mask(
                 let mask_pixel = mask_rgba.get_pixel(x, y);
                 // If mask has content, mark as masked (white with full alpha)
                 let alpha = if mask_pixel[3] > 0 { mask_pixel[3] } else { 0 };
-                result.put_pixel(x, y, Rgba([orig_pixel[0], orig_pixel[1], orig_pixel[2], 255 - alpha]));
+                result.put_pixel(
+                    x,
+                    y,
+                    Rgba([orig_pixel[0], orig_pixel[1], orig_pixel[2], 255 - alpha]),
+                );
             }
             result
         }
@@ -370,7 +389,9 @@ fn decode_base64_image(base64_str: &str) -> Result<Vec<u8>, String> {
         base64_str
     };
 
-    STANDARD.decode(data).map_err(|e| format!("Failed to decode base64: {}", e))
+    STANDARD
+        .decode(data)
+        .map_err(|e| format!("Failed to decode base64: {}", e))
 }
 
 /// Blend two color channels using alpha

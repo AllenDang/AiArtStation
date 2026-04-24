@@ -103,21 +103,16 @@ export type DropZoneType =
 
 export interface GenerateVideoRequest {
   project_id: string;
+  provider_type: string;
   prompt: string;
-  generation_type: VideoGenerationType;
-  first_frame?: string;     // Base64
-  last_frame?: string;      // Base64
-  reference_images?: string[]; // Base64 array for multi-ref
-  reference_videos?: string[]; // Base64 data URLs for reference videos
-  reference_audios?: string[]; // Base64 data URLs for reference audios
-  resolution?: string;      // "480p", "720p", "1080p"
-  duration?: number;        // -1 (auto), 4-15 seconds
-  aspect_ratio?: string;    // "16:9", "4:3", "1:1", etc.
-  generate_audio?: boolean; // Generate audio with video (default true)
-  return_last_frame?: boolean; // Return last frame image (default false)
-  watermark?: boolean;      // Include watermark (default false)
-  seed?: number;            // Random seed (-1 to 2^32-1)
-  source_image_id?: string; // Parent image ID if applicable
+  first_frame?: string;              // Base64
+  last_frame?: string;               // Base64
+  reference_images?: string[];       // Base64 array for multi-ref
+  reference_videos?: string[];       // Base64 data URLs for reference videos
+  reference_audios?: string[];       // Base64 data URLs for reference audios
+  /// Provider-specific parameters rendered from the manifest
+  params: Record<string, unknown>;
+  source_image_id?: string;
 }
 
 // Request with file paths - for hooks to process
@@ -127,6 +122,8 @@ export interface GenerateVideoRequestWithPaths extends Omit<GenerateVideoRequest
   reference_image_inputs?: ReferenceImageInput[];
   reference_video_paths?: string[];  // File paths to video files
   reference_audio_paths?: string[];  // File paths to audio files
+  // UI-visible generation_type derived from params (kept for video preview routing)
+  generation_type: VideoGenerationType;
 }
 
 export interface GenerateVideoResponse {
@@ -141,26 +138,119 @@ export interface VideoGalleryResponse {
   has_more: boolean;
 }
 
-// API Configuration
-export interface ConfigResponse {
-  base_url: string;
-  api_token_set: boolean;
-  image_model: string;
-  video_model: string;
+// ============================================================================
+// App Settings (non-provider preferences)
+// ============================================================================
+
+export interface AppSettings {
   output_directory: string;
   output_format: string;
-  default_size: string;
-  default_aspect_ratio: string;
-  watermark: boolean;
+  default_image_provider_type?: string | null;
+  default_video_provider_type?: string | null;
 }
 
-export interface SaveConfigRequest {
-  base_url: string;
-  api_token: string;
-  image_model: string;
-  video_model: string;
-  output_directory: string;
-  output_format: string;
+// ============================================================================
+// Provider Types
+// ============================================================================
+
+export interface ProviderCapabilities {
+  image: boolean;
+  video: boolean;
+}
+
+export interface CredentialField {
+  key: string;
+  label: string;
+  placeholder?: string;
+  secret: boolean;
+  required: boolean;
+}
+
+export interface ProviderDescriptor {
+  provider_type: string;
+  display_name: string;
+  capabilities: ProviderCapabilities;
+  credential_schema: CredentialField[];
+  image_manifest?: GenerationManifest | null;
+  video_manifest?: GenerationManifest | null;
+}
+
+export interface ProviderInstance {
+  provider_type: string;
+  credentials: Record<string, string>;
+  image_model?: string | null;
+  video_model?: string | null;
+  no_proxy: boolean;
+}
+
+export interface SaveProviderRequest {
+  provider_type: string;
+  credentials: Record<string, string>;
+  image_model?: string | null;
+  video_model?: string | null;
+  no_proxy: boolean;
+}
+
+export interface EnumOption {
+  value: unknown;
+  label: string;
+  description?: string;
+}
+
+export interface VisibleWhen {
+  field: string;
+  equals?: unknown;
+  in_values?: unknown[];
+}
+
+export type ParamField =
+  | {
+      type: "enum";
+      key: string;
+      label: string;
+      options: EnumOption[];
+      default: unknown;
+      visible_when?: VisibleWhen;
+    }
+  | {
+      type: "number";
+      key: string;
+      label: string;
+      min: number;
+      max: number;
+      step: number;
+      default: unknown;
+      visible_when?: VisibleWhen;
+    }
+  | {
+      type: "boolean";
+      key: string;
+      label: string;
+      default: boolean;
+      visible_when?: VisibleWhen;
+    }
+  | {
+      type: "string";
+      key: string;
+      label: string;
+      placeholder?: string;
+      default?: unknown;
+      visible_when?: VisibleWhen;
+    };
+
+export interface Features {
+  reference_images?: number;
+  first_frame?: boolean;
+  last_frame?: boolean;
+  reference_videos?: number;
+  reference_audios?: number;
+  mask?: boolean;
+}
+
+export interface GenerationManifest {
+  params: ParamField[];
+  features: Features;
+  generation_type_key?: string | null;
 }
 
 // Reference image input - can be either base64 or file path
@@ -173,17 +263,11 @@ export interface ReferenceImageInput {
 // Image Generation
 export interface GenerateImageRequest {
   project_id: string;
+  provider_type: string;
   prompt: string;
-  reference_images: string[];  // Final base64 strings sent to API
-  size?: string;
-  aspect_ratio?: string;
-  watermark?: boolean;
-  // Sequential generation (组图)
-  sequential_generation?: boolean;
-  max_images?: number;
-  // Prompt optimization
-  optimize_prompt?: boolean;
-  optimize_prompt_mode?: "standard" | "fast";
+  reference_images: string[];        // Final base64 strings sent to API
+  /// Provider-specific parameters rendered from the manifest
+  params: Record<string, unknown>;
 }
 
 // Request with file paths - for hooks to process
@@ -320,23 +404,6 @@ export interface GenerationTask {
   requestWithPaths?: GenerateImageRequestWithPaths | GenerateVideoRequestWithPaths;
   created_at: string;
 }
-
-// Size options
-export const SIZE_OPTIONS = [
-  { label: "2K", value: "2K" },
-  { label: "4K", value: "4K" },
-] as const;
-
-export const ASPECT_RATIO_OPTIONS = [
-  { label: "1:1", value: "1:1", dimensions: "2048x2048" },
-  { label: "4:3", value: "4:3", dimensions: "2304x1728" },
-  { label: "3:4", value: "3:4", dimensions: "1728x2304" },
-  { label: "16:9", value: "16:9", dimensions: "2560x1440" },
-  { label: "9:16", value: "9:16", dimensions: "1440x2560" },
-  { label: "3:2", value: "3:2", dimensions: "2496x1664" },
-  { label: "2:3", value: "2:3", dimensions: "1664x2496" },
-  { label: "21:9", value: "21:9", dimensions: "3024x1296" },
-] as const;
 
 // OptionsPanel ref handle for external cleanup
 export interface OptionsPanelHandle {

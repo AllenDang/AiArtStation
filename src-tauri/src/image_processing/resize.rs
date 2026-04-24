@@ -24,19 +24,19 @@ pub struct ResizeResult {
 /// - Max file size: 10MB
 /// - Uses Lanczos3 filter for high quality downscaling
 pub fn smart_resize(image_data: &[u8]) -> Result<ResizeResult> {
-    let img = image::load_from_memory(image_data)
-        .context("Failed to decode image")?;
+    let img = image::load_from_memory(image_data).context("Failed to decode image")?;
 
     let (original_width, original_height) = img.dimensions();
     let mut was_resized = false;
 
     // Check if resize is needed for dimensions
-    let (new_width, new_height) = if original_width > MAX_DIMENSION || original_height > MAX_DIMENSION {
-        was_resized = true;
-        calculate_new_dimensions(original_width, original_height, MAX_DIMENSION)
-    } else {
-        (original_width, original_height)
-    };
+    let (new_width, new_height) =
+        if original_width > MAX_DIMENSION || original_height > MAX_DIMENSION {
+            was_resized = true;
+            calculate_new_dimensions(original_width, original_height, MAX_DIMENSION)
+        } else {
+            (original_width, original_height)
+        };
 
     // Resize if dimensions changed
     let resized_img = if was_resized {
@@ -46,12 +46,8 @@ pub fn smart_resize(image_data: &[u8]) -> Result<ResizeResult> {
     };
 
     // Encode to JPEG and check file size
-    let (data, final_width, final_height) = encode_with_size_limit(
-        &resized_img,
-        new_width,
-        new_height,
-        MAX_FILE_SIZE,
-    )?;
+    let (data, final_width, final_height) =
+        encode_with_size_limit(&resized_img, new_width, new_height, MAX_FILE_SIZE)?;
 
     // Update was_resized if we had to reduce dimensions for file size
     if final_width != original_width || final_height != original_height {
@@ -99,7 +95,8 @@ fn encode_with_size_limit(
         // Try encoding with current quality
         let mut buffer = Cursor::new(Vec::new());
         let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, quality);
-        current_img.write_with_encoder(encoder)
+        current_img
+            .write_with_encoder(encoder)
             .context("Failed to encode image")?;
 
         let data = buffer.into_inner();
