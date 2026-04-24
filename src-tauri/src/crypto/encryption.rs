@@ -1,6 +1,6 @@
 use aes_gcm::{
-    aead::{rand_core::RngCore, Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit, OsRng, rand_core::RngCore},
 };
 use pbkdf2::pbkdf2_hmac_array;
 use sha2::Sha256;

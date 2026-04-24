@@ -334,27 +334,25 @@ pub async fn delete_video(
 ) -> Result<bool, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
-    if delete_file {
-        if let Ok(Some(record)) = db.get_video_by_id(&id) {
-            // Delete video file
-            if let Some(file_path) = record.file_path {
-                let _ = std::fs::remove_file(&file_path);
-            }
-            // Delete first frame image
-            if let Some(first_frame_path) = record.first_frame_path {
-                let _ = std::fs::remove_file(&first_frame_path);
-            }
-            // Delete last frame image
-            if let Some(last_frame_path) = record.last_frame_path {
-                let _ = std::fs::remove_file(&last_frame_path);
-            }
-            // Delete separated audio files
-            if let Some(vocals_path) = record.vocals_path {
-                let _ = std::fs::remove_file(&vocals_path);
-            }
-            if let Some(bgm_path) = record.bgm_path {
-                let _ = std::fs::remove_file(&bgm_path);
-            }
+    if delete_file && let Ok(Some(record)) = db.get_video_by_id(&id) {
+        // Delete video file
+        if let Some(file_path) = record.file_path {
+            let _ = std::fs::remove_file(&file_path);
+        }
+        // Delete first frame image
+        if let Some(first_frame_path) = record.first_frame_path {
+            let _ = std::fs::remove_file(&first_frame_path);
+        }
+        // Delete last frame image
+        if let Some(last_frame_path) = record.last_frame_path {
+            let _ = std::fs::remove_file(&last_frame_path);
+        }
+        // Delete separated audio files
+        if let Some(vocals_path) = record.vocals_path {
+            let _ = std::fs::remove_file(&vocals_path);
+        }
+        if let Some(bgm_path) = record.bgm_path {
+            let _ = std::fs::remove_file(&bgm_path);
         }
     }
 
@@ -684,9 +682,9 @@ fn extract_frame_at_position(
     output_path: &str,
     position: FramePosition,
 ) -> Result<(), String> {
+    use openh264::OpenH264API;
     use openh264::decoder::{Decoder, DecoderConfig, Flush};
     use openh264::formats::YUVSource;
-    use openh264::OpenH264API;
     use std::fs::File;
     use std::io::{BufReader, Read, Seek, SeekFrom};
 
@@ -900,7 +898,7 @@ fn get_avc_config(track: &mp4parse::Track) -> Result<(Vec<u8>, Vec<u8>), String>
     // Look for avcC in the sample description
     if let Some(ref stsd) = track.stsd {
         for desc in &stsd.descriptions {
-            if let mp4parse::SampleEntry::Video(ref video) = desc {
+            if let mp4parse::SampleEntry::Video(video) = desc {
                 match &video.codec_specific {
                     mp4parse::VideoCodecSpecific::AVCConfig(data) => {
                         return parse_avcc_data(data);
@@ -1200,7 +1198,7 @@ fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(),
             Err(symphonia::core::errors::Error::IoError(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
-                break
+                break;
             }
             Err(_) => break,
         };
@@ -1279,7 +1277,7 @@ fn extract_audio_from_mp4(video_path: &str, output_wav_path: &str) -> Result<(),
 
 /// Generate a base64 thumbnail from an image file using image crate
 fn generate_thumbnail_from_image(image_path: &str) -> Result<String, String> {
-    use base64::{engine::general_purpose::STANDARD, Engine};
+    use base64::{Engine, engine::general_purpose::STANDARD};
 
     let img = image::open(image_path).map_err(|e| format!("Failed to open image: {}", e))?;
 

@@ -108,20 +108,18 @@ pub async fn delete_gallery_image(
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
     // Get file path before deleting
-    if delete_file {
-        if let Ok(Some(record)) = db.get_image_by_id(&id) {
-            // Delete image file
-            let _ = std::fs::remove_file(&record.file_path);
-            // Delete metadata file if exists
-            let metadata_path = format!(
-                "{}.json",
-                record
-                    .file_path
-                    .trim_end_matches(".jpg")
-                    .trim_end_matches(".png")
-            );
-            let _ = std::fs::remove_file(&metadata_path);
-        }
+    if delete_file && let Ok(Some(record)) = db.get_image_by_id(&id) {
+        // Delete image file
+        let _ = std::fs::remove_file(&record.file_path);
+        // Delete metadata file if exists
+        let metadata_path = format!(
+            "{}.json",
+            record
+                .file_path
+                .trim_end_matches(".jpg")
+                .trim_end_matches(".png")
+        );
+        let _ = std::fs::remove_file(&metadata_path);
     }
 
     db.delete_image(&id).map_err(|e| e.to_string())
@@ -380,7 +378,7 @@ pub async fn combine_image_with_mask(
 
 /// Decode base64 image data (strips data URL prefix if present)
 fn decode_base64_image(base64_str: &str) -> Result<Vec<u8>, String> {
-    use base64::{engine::general_purpose::STANDARD, Engine};
+    use base64::{Engine, engine::general_purpose::STANDARD};
 
     // Strip data URL prefix if present
     let data = if let Some(pos) = base64_str.find(",") {

@@ -115,10 +115,8 @@ pub async fn delete_asset(
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
     // Optionally delete the file
-    if delete_file {
-        if let Ok(Some(asset)) = db.get_asset_by_id(&id) {
-            let _ = std::fs::remove_file(&asset.file_path);
-        }
+    if delete_file && let Ok(Some(asset)) = db.get_asset_by_id(&id) {
+        let _ = std::fs::remove_file(&asset.file_path);
     }
 
     db.delete_asset(&id).map_err(|e| e.to_string())

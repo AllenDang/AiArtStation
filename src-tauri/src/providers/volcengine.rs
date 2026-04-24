@@ -4,11 +4,11 @@ use super::{
     ProviderImageSource, ProviderVideoStatus, ProviderVideoTask, ReferenceMedia, RequestOptions,
     VideoMetadata, VisibleWhen,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const CRED_BASE_URL: &str = "base_url";
 const CRED_API_TOKEN: &str = "api_token";

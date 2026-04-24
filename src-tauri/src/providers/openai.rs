@@ -12,15 +12,15 @@ use super::{
     ParamField, Provider, ProviderCapabilities, ProviderImage, ProviderImageOutput,
     ProviderImageSource, ProviderVideoStatus, ProviderVideoTask, ReferenceMedia, RequestOptions,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use reqwest::{
-    multipart::{Form, Part},
     Client,
+    multipart::{Form, Part},
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const CRED_BASE_URL: &str = "base_url";
 const CRED_API_KEY: &str = "api_key";

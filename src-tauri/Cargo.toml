@@ -1,9 +1,21 @@
 [package]
 name = "ai-artstation"
-version = "1.0.0"
+version = "1.1.0"
 description = "AI Art Station - Generate images and videos with AI"
-authors = ["you"]
-edition = "2021"
+authors = ["AllenDang"]
+edition = "2024"
+
+[profile.release]
+strip = "symbols"
+lto = "fat"
+opt-level = "z"
+codegen-units = 1
+panic = "abort"
+
+[profile.release.package."*"]
+strip = "symbols"
+opt-level = "z"
+codegen-units = 1
 
 [lib]
 name = "ai_artstation_lib"

@@ -5,6 +5,8 @@ mod providers;
 mod storage;
 
 use commands::{
+    // State
+    AppState,
     add_image_tag,
     add_video_tag,
     // Stem model management
@@ -63,8 +65,6 @@ use commands::{
     test_provider_connection,
     update_asset,
     update_project,
-    // State
-    AppState,
 };
 use providers::ProviderRegistry;
 use std::path::PathBuf;
@@ -85,13 +85,13 @@ pub fn run() {
 
             let database = Database::new(output_dir).expect("Failed to initialize database");
 
-            if let Ok((images, videos)) = database.cleanup_missing_files() {
-                if images > 0 || videos > 0 {
-                    println!(
-                        "Cleanup: removed {} images and {} videos with missing files",
-                        images, videos
-                    );
-                }
+            if let Ok((images, videos)) = database.cleanup_missing_files()
+                && (images > 0 || videos > 0)
+            {
+                println!(
+                    "Cleanup: removed {} images and {} videos with missing files",
+                    images, videos
+                );
             }
 
             _app.manage(AppState {
