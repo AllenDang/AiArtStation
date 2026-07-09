@@ -19,6 +19,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { useGallery, useFiles, useVideoGeneration } from "../../hooks";
 import type { GalleryImage, GenerationTask, ImageBundle, AssetType, Video as VideoType } from "../../types";
 import { TaskCard, TaskImagePreview } from "../Generation";
@@ -33,6 +34,7 @@ import {
   Loader2,
   ExternalLink,
   FolderOpen,
+  Copy,
   User,
   Mountain,
   Palette,
@@ -740,6 +742,29 @@ export function GalleryPage({
                   <span className="bg-secondary text-secondary-foreground px-2 py-1 rounded">
                     {new Date(selectedImage.created_at).toLocaleString()}
                   </span>
+                </div>
+                <div className="flex items-start gap-2 pt-2 border-t">
+                  <ScrollArea className="flex-1 max-h-24">
+                    <p className="text-sm text-muted-foreground whitespace-pre-wrap pr-2">
+                      {selectedImage.prompt}
+                    </p>
+                  </ScrollArea>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-shrink-0"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(selectedImage.prompt);
+                        toast.success("提示词已复制");
+                      } catch (e) {
+                        toast.error(`复制失败: ${e}`);
+                      }
+                    }}
+                  >
+                    <Copy className="w-4 h-4 mr-2" />
+                    复制提示词
+                  </Button>
                 </div>
                 <div className="flex gap-2">
                   <Button onClick={() => openFile(selectedImage.file_path)}>

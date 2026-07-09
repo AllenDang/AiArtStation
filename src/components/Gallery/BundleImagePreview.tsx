@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { ImageBundle } from "../../types";
 import { cn } from "@/lib/utils";
-import { ImageIcon, ExternalLink, FolderOpen, Loader2 } from "lucide-react";
+import { ImageIcon, ExternalLink, FolderOpen, Loader2, Copy } from "lucide-react";
+import { toast } from "sonner";
 
 interface BundleImagePreviewProps {
   bundle: ImageBundle | null;
@@ -68,6 +69,15 @@ export function BundleImagePreview({
 
   const images = bundle.images;
   const selectedImage = images[selectedIndex];
+
+  const handleCopyPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(bundle.prompt);
+      toast.success("提示词已复制");
+    } catch (e) {
+      toast.error(`复制失败: ${e}`);
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -133,6 +143,24 @@ export function BundleImagePreview({
               ))}
             </div>
           </ScrollArea>
+        </div>
+
+        {/* Prompt */}
+        <div className="flex items-start gap-2 pt-2 border-t">
+          <ScrollArea className="flex-1 max-h-24">
+            <p className="text-sm text-muted-foreground whitespace-pre-wrap pr-2">
+              {bundle.prompt}
+            </p>
+          </ScrollArea>
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-shrink-0"
+            onClick={handleCopyPrompt}
+          >
+            <Copy className="w-4 h-4 mr-2" />
+            复制提示词
+          </Button>
         </div>
 
         {/* Image info and actions */}

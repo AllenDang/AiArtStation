@@ -2,7 +2,7 @@ use super::{
     CredentialField, Credentials, EnumOption, Features, GenerationManifest, ImageMetadata,
     ParamField, Provider, ProviderCapabilities, ProviderImage, ProviderImageOutput,
     ProviderImageSource, ProviderVideoStatus, ProviderVideoTask, ReferenceMedia, RequestOptions,
-    VideoMetadata, VisibleWhen,
+    VideoMetadata,
 };
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -89,23 +89,15 @@ impl Provider for VolcengineProvider {
             None
         };
 
-        let sequential = params
-            .get("sequential_generation")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let max_images = params
-            .get("max_images")
-            .and_then(|v| v.as_i64())
-            .map(|n| n as i32);
+        let output_format = params
+            .get("output_format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("png");
 
         let optimize_prompt = params
             .get("optimize_prompt")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let optimize_mode = params
-            .get("optimize_prompt_mode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("standard");
 
         let watermark = params
             .get("watermark")
@@ -117,21 +109,17 @@ impl Provider for VolcengineProvider {
             "prompt": prompt,
             "size": size,
             "watermark": watermark,
+            "output_format": output_format,
             "response_format": "url",
-            "sequential_image_generation": if sequential { "auto" } else { "disabled" },
         });
 
         if let Some(image) = image_input {
             api_request["image"] = serde_json::to_value(image)?;
         }
-        if sequential {
-            api_request["sequential_image_generation_options"] = json!({
-                "max_images": max_images.unwrap_or(3),
-            });
-        }
+        // Seedream 5.0 Pro only supports the standard optimization mode.
         if optimize_prompt {
             api_request["optimize_prompt_options"] = json!({
-                "mode": optimize_mode,
+                "mode": "standard",
             });
         }
 
@@ -416,12 +404,12 @@ fn image_manifest() -> GenerationManifest {
                     EnumOption {
                         value: json!("16:9"),
                         label: "16:9 横屏".to_string(),
-                        description: Some("2560×1440".to_string()),
+                        description: Some("2848×1600".to_string()),
                     },
                     EnumOption {
                         value: json!("9:16"),
                         label: "9:16 竖屏".to_string(),
-                        description: Some("1440×2560".to_string()),
+                        description: Some("1600×2848".to_string()),
                     },
                     EnumOption {
                         value: json!("3:2"),
@@ -436,7 +424,7 @@ fn image_manifest() -> GenerationManifest {
                     EnumOption {
                         value: json!("21:9"),
                         label: "21:9 超宽".to_string(),
-                        description: Some("3024×1296".to_string()),
+                        description: Some("3136×1344".to_string()),
                     },
                 ],
                 default: json!("1:1"),
@@ -447,65 +435,42 @@ fn image_manifest() -> GenerationManifest {
                 label: "分辨率".to_string(),
                 options: vec![
                     EnumOption {
-                        value: json!("2K"),
-                        label: "2K".to_string(),
+                        value: json!("1K"),
+                        label: "1K".to_string(),
                         description: None,
                     },
                     EnumOption {
-                        value: json!("4K"),
-                        label: "4K".to_string(),
+                        value: json!("2K"),
+                        label: "2K".to_string(),
                         description: None,
                     },
                 ],
                 default: json!("2K"),
                 visible_when: None,
             },
-            ParamField::Boolean {
-                key: "sequential_generation".to_string(),
-                label: "生成组图".to_string(),
-                default: false,
+            ParamField::Enum {
+                key: "output_format".to_string(),
+                label: "输出格式".to_string(),
+                options: vec![
+                    EnumOption {
+                        value: json!("png"),
+                        label: "PNG".to_string(),
+                        description: None,
+                    },
+                    EnumOption {
+                        value: json!("jpeg"),
+                        label: "JPEG".to_string(),
+                        description: None,
+                    },
+                ],
+                default: json!("png"),
                 visible_when: None,
-            },
-            ParamField::Number {
-                key: "max_images".to_string(),
-                label: "组图数量".to_string(),
-                min: 2.0,
-                max: 15.0,
-                step: 1.0,
-                default: json!(3),
-                visible_when: Some(VisibleWhen {
-                    field: "sequential_generation".to_string(),
-                    equals: Some(json!(true)),
-                    in_values: None,
-                }),
             },
             ParamField::Boolean {
                 key: "optimize_prompt".to_string(),
                 label: "优化提示词".to_string(),
                 default: false,
                 visible_when: None,
-            },
-            ParamField::Enum {
-                key: "optimize_prompt_mode".to_string(),
-                label: "优化模式".to_string(),
-                options: vec![
-                    EnumOption {
-                        value: json!("standard"),
-                        label: "标准".to_string(),
-                        description: None,
-                    },
-                    EnumOption {
-                        value: json!("fast"),
-                        label: "快速".to_string(),
-                        description: None,
-                    },
-                ],
-                default: json!("standard"),
-                visible_when: Some(VisibleWhen {
-                    field: "optimize_prompt".to_string(),
-                    equals: Some(json!(true)),
-                    in_values: None,
-                }),
             },
             ParamField::Boolean {
                 key: "watermark".to_string(),
@@ -515,7 +480,7 @@ fn image_manifest() -> GenerationManifest {
             },
         ],
         features: Features {
-            reference_images: Some(14),
+            reference_images: Some(10),
             mask: true,
             ..Default::default()
         },
@@ -752,24 +717,25 @@ fn preview(s: &str) -> String {
 
 /// Map (base_size, aspect_ratio) → Ark size string.
 /// The Ark image API accepts a "WIDTHxHEIGHT" pixel string.
+/// Values follow the Seedream 5.0 Pro 1K/2K tables from the API docs.
 fn resolve_image_size(base: &str, ratio: &str) -> String {
     match (base, ratio) {
+        ("1K", "1:1") => "1024x1024",
+        ("1K", "4:3") => "1152x864",
+        ("1K", "3:4") => "864x1152",
+        ("1K", "16:9") => "1312x736",
+        ("1K", "9:16") => "736x1312",
+        ("1K", "3:2") => "1248x832",
+        ("1K", "2:3") => "832x1248",
+        ("1K", "21:9") => "1568x672",
         ("2K", "1:1") => "2048x2048",
         ("2K", "4:3") => "2304x1728",
         ("2K", "3:4") => "1728x2304",
-        ("2K", "16:9") => "2560x1440",
-        ("2K", "9:16") => "1440x2560",
+        ("2K", "16:9") => "2848x1600",
+        ("2K", "9:16") => "1600x2848",
         ("2K", "3:2") => "2496x1664",
         ("2K", "2:3") => "1664x2496",
-        ("2K", "21:9") => "3024x1296",
-        ("4K", "1:1") => "4096x4096",
-        ("4K", "4:3") => "4608x3456",
-        ("4K", "3:4") => "3456x4608",
-        ("4K", "16:9") => "5120x2880",
-        ("4K", "9:16") => "2880x5120",
-        ("4K", "3:2") => "4992x3328",
-        ("4K", "2:3") => "3328x4992",
-        ("4K", "21:9") => "6048x2592",
+        ("2K", "21:9") => "3136x1344",
         _ => "2048x2048",
     }
     .to_string()

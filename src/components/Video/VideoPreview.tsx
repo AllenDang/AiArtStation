@@ -7,8 +7,10 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import type { Video } from "../../types";
-import { Video as VideoIcon, ExternalLink, FolderOpen, Trash2, Loader2 } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Video as VideoIcon, ExternalLink, FolderOpen, Trash2, Loader2, Copy } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { toast } from "sonner";
 
 interface VideoPreviewProps {
   video: Video | null;
@@ -55,6 +57,16 @@ export function VideoPreview({
       setConfirmDelete(true);
     }
   }, [video, confirmDelete, onDelete, onOpenChange]);
+
+  const handleCopyPrompt = useCallback(async () => {
+    if (!video) return;
+    try {
+      await navigator.clipboard.writeText(video.prompt);
+      toast.success("提示词已复制");
+    } catch (e) {
+      toast.error(`复制失败: ${e}`);
+    }
+  }, [video]);
 
   if (!video) return null;
 
@@ -128,6 +140,24 @@ export function VideoPreview({
                 {new Date(video.completed_at).toLocaleString()}
               </span>
             )}
+          </div>
+
+          {/* Prompt */}
+          <div className="flex items-start gap-2 pt-2 border-t">
+            <ScrollArea className="flex-1 max-h-24">
+              <p className="text-sm text-muted-foreground whitespace-pre-wrap pr-2">
+                {video.prompt}
+              </p>
+            </ScrollArea>
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-shrink-0"
+              onClick={handleCopyPrompt}
+            >
+              <Copy className="w-4 h-4 mr-2" />
+              复制提示词
+            </Button>
           </div>
 
           {/* Actions */}
